@@ -1,9 +1,10 @@
 import argparse
-import csv
 import os
 from dataclasses import dataclass
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from particle_life.particles import Particle, compute_net_forces
 
@@ -25,6 +26,7 @@ class SimulationConfig:
     gamma: float = 0.2
     sigma: float = 0.05
     out_path: str | None = None
+    chunk: int = 1
 
 
 def init_particles(cfg: SimulationConfig) -> list[Particle]:
@@ -59,19 +61,58 @@ def step(particles: list[Particle], cfg: SimulationConfig, rng: np.random.Genera
             p.pos %= cfg.box_size
 
 
-def write_step_csv(writer, step_idx: int, particles: list[Particle]) -> None:
-    for i, p in enumerate(particles):
-        row = [
-            step_idx,
-            i,
-            float(p.m),
-            float(p.pos[0]),
-            float(p.pos[1]),
-            float(p.vel[0]),
-            float(p.vel[1]),
+def get_schema(state_dim: int) -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("step", pa.int32()),
+            pa.field("id", pa.int32()),
+            pa.field("m", pa.float64()),
+            pa.field("pos", pa.list_(pa.float64(), list_size=2)),
+            pa.field("vel", pa.list_(pa.float64(), list_size=2)),
+            pa.field("state", pa.list_(pa.float64(), list_size=state_dim)),
         ]
-        row.extend(float(x) for x in p.state)
-        writer.writerow(row)
+    )
+
+
+def make_table_from_buffer(
+    buffer: list[tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    state_dim: int,
+    schema: pa.Schema,
+) -> pa.Table:
+    if not buffer:
+        raise ValueError("Buffer must not be empty")
+
+    n_particles = buffer[0][1].shape[0]
+    n_steps = len(buffer)
+
+    steps = np.repeat(np.array([item[0] for item in buffer], dtype=np.int32), n_particles)
+    ids = np.tile(np.arange(n_particles, dtype=np.int32), n_steps)
+    masses = np.concatenate([item[1] for item in buffer]).astype(np.float64, copy=False)
+    pos = np.concatenate([item[2] for item in buffer], axis=0).astype(np.float64, copy=False)
+    vel = np.concatenate([item[3] for item in buffer], axis=0).astype(np.float64, copy=False)
+    state = np.concatenate([item[4] for item in buffer], axis=0).astype(np.float64, copy=False)
+
+    step_col = pa.array(steps, type=pa.int32())
+    id_col = pa.array(ids, type=pa.int32())
+    m_col = pa.array(masses, type=pa.float64())
+    pos_col = pa.FixedSizeListArray.from_arrays(pa.array(pos.ravel(), type=pa.float64()), 2)
+    vel_col = pa.FixedSizeListArray.from_arrays(pa.array(vel.ravel(), type=pa.float64()), 2)
+    state_col = pa.FixedSizeListArray.from_arrays(
+        pa.array(state.ravel(), type=pa.float64()),
+        state_dim,
+    )
+
+    return pa.Table.from_arrays([step_col, id_col, m_col, pos_col, vel_col, state_col], schema=schema)
+
+
+def write_chunk(out_dir: str, chunk_id: int, table: pa.Table) -> None:
+    chunk_dir = os.path.join(out_dir, f"chunk_id={chunk_id}")
+    os.makedirs(chunk_dir, exist_ok=True)
+    out_file = os.path.join(chunk_dir, "part-000000.parquet")
+    try:
+        pq.write_table(table, out_file, compression="zstd")
+    except (TypeError, ValueError):
+        pq.write_table(table, out_file)
 
 
 class Simulator:
@@ -81,31 +122,44 @@ class Simulator:
         self.particles = init_particles(cfg)
 
     def run(self, out_path: str) -> None:
-        out_dir = os.path.dirname(out_path)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(out_path, exist_ok=True)
+        schema = get_schema(self.cfg.state_dim)
+        buffer: list[tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+        chunk_id = 0
 
-        with open(out_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            header = ["step", "id", "m", "x", "y", "vx", "vy"]
-            for d in range(self.cfg.state_dim):
-                header.append(f"state_{d}")
-            writer.writerow(header)
+        for t in range(self.cfg.steps):
+            m_step = np.array([p.m for p in self.particles], dtype=np.float64)
+            pos_step = np.stack([p.pos for p in self.particles]).copy()
+            vel_step = np.stack([p.vel for p in self.particles]).copy()
+            state_step = np.stack([p.state for p in self.particles]).copy()
+            buffer.append((t, m_step, pos_step, vel_step, state_step))
 
-            for t in range(self.cfg.steps):
-                write_step_csv(writer, t, self.particles)
-                step(self.particles, self.cfg, self.rng)
+            if len(buffer) == self.cfg.chunk:
+                table = make_table_from_buffer(buffer, self.cfg.state_dim, schema)
+                write_chunk(out_path, chunk_id, table)
+                buffer.clear()
+                chunk_id += 1
+
+            step(self.particles, self.cfg, self.rng)
+
+        if buffer:
+            table = make_table_from_buffer(buffer, self.cfg.state_dim, schema)
+            write_chunk(out_path, chunk_id, table)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Particle Life simulation")
-    parser.add_argument("--out", required=True, help="Output is CSV compatible with pandas read_csv.")
+    parser.add_argument("--out", required=True, help="Output parquet dataset directory.")
     parser.add_argument("--steps", type=int, default=1000, help="Number of steps")
     parser.add_argument("--n", type=int, default=200, help="Number of particles")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--box", type=float, default=1.0, help="Box size")
-    return parser.parse_args()
+    parser.add_argument("--chunk", type=int, default=1, help="Number of steps per parquet file")
+    args = parser.parse_args()
+    if args.chunk < 1:
+        parser.error("--chunk must be >= 1")
+    return args
 
 
 def main() -> None:
@@ -117,6 +171,7 @@ def main() -> None:
         seed=args.seed,
         box_size=args.box,
         out_path=args.out,
+        chunk=args.chunk,
     )
     Simulator(cfg).run(args.out)
 
