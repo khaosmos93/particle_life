@@ -1,8 +1,7 @@
 class SimulationConfig:
-    def __init__(self, steps: int, n_particles: int, n_types: int):
+    def __init__(self, steps: int, n_particles: int):
         self.steps = steps
         self.n_particles = n_particles
-        self.n_types = n_types
 
 
 class Simulator:
