@@ -17,66 +17,121 @@ class Particle:
 
         if self.m <= 0:
             raise ValueError("Mass must be positive")
-
         if self.pos.shape != (2,):
             raise ValueError("pos must be shape (2,)")
-
         if self.vel.shape != (2,):
             raise ValueError("vel must be shape (2,)")
-
         if self.state.ndim != 1 or self.state.size == 0:
             raise ValueError("state must be 1D and non-empty")
 
 
-def coupling(p: Particle, q: Particle) -> float:
-    d = p.state.size
-    return float(np.tanh(np.dot(p.state, q.state) / max(d, 1)))
+def minimum_image(delta: np.ndarray, box_size: float) -> np.ndarray:
+    return delta - box_size * np.round(delta / box_size)
 
 
-def pair_force(
-    p: Particle,
-    q: Particle,
-    r_min: float = 0.02,
-    r0: float = 0.08,
-    r_cut: float = 0.25,
-    k_rep: float = 1.0,
-    k_mid: float = 0.5,
+def build_cell_list(
+    pos: np.ndarray, box_size: float, r_cut: float
+) -> tuple[dict[tuple[int, int], list[int]], int]:
+    cell_size = r_cut
+    ncell = max(1, int(np.floor(box_size / cell_size)))
+    effective_cell_size = box_size / ncell
+
+    cx = np.floor(pos[:, 0] / effective_cell_size).astype(int) % ncell
+    cy = np.floor(pos[:, 1] / effective_cell_size).astype(int) % ncell
+
+    cells: dict[tuple[int, int], list[int]] = {}
+    for idx, (x, y) in enumerate(zip(cx, cy)):
+        key = (int(x), int(y))
+        cells.setdefault(key, []).append(idx)
+
+    return cells, ncell
+
+
+def neighbor_pairs(
+    pos: np.ndarray, box_size: float, r_cut: float
+) -> tuple[np.ndarray, np.ndarray]:
+    cells, ncell = build_cell_list(pos, box_size, r_cut)
+    pairs: list[tuple[int, int]] = []
+
+    for (cx, cy), i_list in cells.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nx = (cx + dx) % ncell
+                ny = (cy + dy) % ncell
+                j_list = cells.get((nx, ny), [])
+                for i in i_list:
+                    for j in j_list:
+                        if i < j:
+                            pairs.append((i, j))
+
+    if not pairs:
+        empty = np.empty(0, dtype=int)
+        return empty, empty
+
+    pair_arr = np.asarray(pairs, dtype=int)
+    return pair_arr[:, 0], pair_arr[:, 1]
+
+
+def coupling_state(state_i: np.ndarray, state_j: np.ndarray) -> float:
+    d = max(1, state_i.size)
+    return float(np.tanh(np.dot(state_i, state_j) / d))
+
+
+def pair_force_from_delta(
+    delta: np.ndarray,
+    c: float,
+    r_min: float,
+    r0: float,
+    r_cut: float,
+    k_rep: float,
+    k_mid: float,
 ) -> np.ndarray:
-    delta = q.pos - p.pos
     r = np.linalg.norm(delta)
-
-    if r == 0:
+    if r == 0 or r >= r_cut:
         return np.zeros(2, dtype=np.float64)
 
     unit = delta / r
-
     if r < r_min:
         mag = k_rep * (r_min - r) / r_min
-    elif r < r_cut:
-        c = coupling(p, q)
-        mag = k_mid * c * (1 - r / r_cut) * (r0 - r) / r0
     else:
-        mag = 0.0
+        mag = k_mid * c * (1 - r / r_cut) * (r0 - r) / r0
 
-    # positive mag => repulsive
     return -mag * unit
 
 
-def total_force(
-    p: Particle,
-    q: Particle,
-    gamma: float = 0.2,
-    sigma: float = 0.05,
-    rng: np.random.Generator | None = None,
-    **force_params,
+def compute_net_forces(
+    particles: list[Particle],
+    box_size: float,
+    wrap: bool,
+    r_min: float,
+    r0: float,
+    r_cut: float,
+    k_rep: float,
+    k_mid: float,
+    gamma: float,
+    sigma: float,
+    rng: np.random.Generator,
 ) -> np.ndarray:
-    if rng is None:
-        rng = np.random.default_rng()
+    n = len(particles)
+    pos = np.asarray([p.pos for p in particles], dtype=np.float64)
+    i_idx, j_idx = neighbor_pairs(pos, box_size, r_cut)
+    forces = np.zeros((n, 2), dtype=np.float64)
 
-    f_det = pair_force(p, q, **force_params)
+    for i, j in zip(i_idx, j_idx):
+        delta = pos[j] - pos[i]
+        if wrap:
+            delta = minimum_image(delta, box_size)
 
-    damping = -gamma * p.vel
+        r = np.linalg.norm(delta)
+        if r == 0 or r >= r_cut:
+            continue
 
-    noise = sigma * rng.normal(0.0, 1.0, size=2)
+        c = coupling_state(particles[i].state, particles[j].state)
+        fij = pair_force_from_delta(delta, c, r_min, r0, r_cut, k_rep, k_mid)
+        forces[i] += fij
+        forces[j] -= fij
 
-    return f_det + damping + noise
+    for i, p in enumerate(particles):
+        forces[i] += -gamma * p.vel + sigma * rng.normal(0.0, 1.0, size=2)
+
+    return forces
