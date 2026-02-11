@@ -1,7 +1,7 @@
 import argparse
-import json
+import csv
+import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
@@ -59,21 +59,19 @@ def step(particles: list[Particle], cfg: SimulationConfig, rng: np.random.Genera
             p.pos %= cfg.box_size
 
 
-def write_step_jsonl(path_handle, step_idx: int, particles: list[Particle]) -> None:
-    payload = {
-        "step": step_idx,
-        "particles": [
-            {
-                "id": i,
-                "m": float(p.m),
-                "pos": [float(p.pos[0]), float(p.pos[1])],
-                "vel": [float(p.vel[0]), float(p.vel[1])],
-                "state": [float(x) for x in p.state],
-            }
-            for i, p in enumerate(particles)
-        ],
-    }
-    path_handle.write(json.dumps(payload) + "\n")
+def write_step_csv(writer, step_idx: int, particles: list[Particle]) -> None:
+    for i, p in enumerate(particles):
+        row = [
+            step_idx,
+            i,
+            float(p.m),
+            float(p.pos[0]),
+            float(p.pos[1]),
+            float(p.vel[0]),
+            float(p.vel[1]),
+        ]
+        row.extend(float(x) for x in p.state)
+        writer.writerow(row)
 
 
 class Simulator:
@@ -83,18 +81,25 @@ class Simulator:
         self.particles = init_particles(cfg)
 
     def run(self, out_path: str) -> None:
-        out_file = Path(out_path)
-        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
-        with out_file.open("w", encoding="utf-8") as f:
+        with open(out_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            header = ["step", "id", "m", "x", "y", "vx", "vy"]
+            for d in range(self.cfg.state_dim):
+                header.append(f"state_{d}")
+            writer.writerow(header)
+
             for t in range(self.cfg.steps):
-                write_step_jsonl(f, t, self.particles)
+                write_step_csv(writer, t, self.particles)
                 step(self.particles, self.cfg, self.rng)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Particle Life simulation")
-    parser.add_argument("--out", required=True, help="Output JSONL file path")
+    parser.add_argument("--out", required=True, help="Output is CSV compatible with pandas read_csv.")
     parser.add_argument("--steps", type=int, default=1000, help="Number of steps")
     parser.add_argument("--n", type=int, default=200, help="Number of particles")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size")
