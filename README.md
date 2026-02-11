@@ -41,5 +41,16 @@ Read only a single chunk partition:
 
 ```python
 df = pd.read_parquet("data/raw/run_ds/chunk_id=0")
-
 ```
+
+## Animation
+
+Render a simple animation directly from a Parquet dataset directory (including Hive-style partitions such as `chunk_id=0/part.parquet`):
+
+```bash
+python -m particle_life.analysis --in data/raw/run_ds --out data/figures/run.gif --fps 30 --stride 2
+```
+
+Notes:
+- GIF output is the easiest/most portable default.
+- MP4 output is supported (`--out ...mp4`) but may require ffmpeg to be available.
