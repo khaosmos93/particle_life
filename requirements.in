@@ -4,6 +4,7 @@ scipy
 
 # Data handling
 pandas
+pyarrow
 
 # Speed up
 numba
