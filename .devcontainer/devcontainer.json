@@ -1,0 +1,12 @@
+{
+  "name": "particle-life",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": {
+      "label": "Particle Life Realtime",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postCreateCommand": "pip install -e ."
+}
