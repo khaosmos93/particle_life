@@ -11,6 +11,7 @@ numba
 
 # Visualization (2D)
 matplotlib
+imageio
 
 # Visualization (3D)
 pyvista
