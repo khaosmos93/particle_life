@@ -1,0 +1,18 @@
+# Core numerical computing
+numpy
+scipy
+
+# Data handling
+pandas
+
+# Speed up
+numba
+
+# Visualization (2D)
+matplotlib
+
+# Visualization (3D)
+pyvista
+
+# Utilities
+tqdm
