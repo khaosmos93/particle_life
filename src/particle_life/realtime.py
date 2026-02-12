@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import contextlib
 import json
 from dataclasses import asdict
@@ -29,6 +30,8 @@ class RealtimeSimulation:
         self.rng = np.random.default_rng(self.cfg.seed)
         self.particles = init_particles(self.cfg)
         self.running = True
+        self.substeps = 10
+        self.send_every = 1
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
 
@@ -55,11 +58,23 @@ class RealtimeSimulation:
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = init_particles(self.cfg)
 
-    async def tick(self) -> bytes:
+    async def tick(self, frame_interval_idx: int) -> bytes | None:
         async with self.lock:
-            if self.running:
-                step(self.particles, self.cfg, self.rng)
-            return pack_frame(self.particles, self.cfg.box_size)
+            if not self.running:
+                return None
+
+            dt_phys = self.cfg.dt / self.substeps
+            cfg_dict = asdict(self.cfg)
+            cfg_dict["dt"] = dt_phys
+            step_cfg = SimulationConfig(**cfg_dict)
+
+            for _ in range(self.substeps):
+                step(self.particles, step_cfg, self.rng)
+
+            if frame_interval_idx % self.send_every == 0:
+                return pack_frame(self.particles, self.cfg.box_size)
+
+            return None
 
 
 sim = RealtimeSimulation()
@@ -95,10 +110,13 @@ def pack_frame(particles, box_size):
 
 
 async def simulation_loop() -> None:
+    frame_interval_idx = 0
     while True:
-        frame = await sim.tick()
+        frame = await sim.tick(frame_interval_idx)
 
-        if sim.clients:
+        frame_interval_idx += 1
+
+        if frame is not None and sim.clients:
             stale = []
             for ws in sim.clients:
                 try:
@@ -150,4 +168,19 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("particle_life.realtime:app", host="0.0.0.0", port=8000)
+    parser = argparse.ArgumentParser(description="Run realtime Particle Life WebGL server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--dt", type=float, default=sim.cfg.dt)
+    parser.add_argument("--substeps", type=int, default=10)
+    parser.add_argument("--send-every", type=int, default=1)
+    args = parser.parse_args()
+
+    sim.substeps = max(1, args.substeps)
+    sim.send_every = max(1, args.send_every)
+
+    cfg_dict = asdict(sim.cfg)
+    cfg_dict["dt"] = args.dt
+    sim.cfg = SimulationConfig(**cfg_dict)
+
+    uvicorn.run("particle_life.realtime:app", host=args.host, port=args.port)

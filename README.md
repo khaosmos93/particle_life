@@ -75,9 +75,22 @@ In GitHub Codespaces:
 - WebSocket automatically uses `wss` when the page is loaded over HTTPS.
 
 Notes:
+- `--dt` is the timestep for one frame interval.
+- Physics uses substeps, so effective physics timestep is `dt / substeps`.
+- Binary frames are sent every `--send-every` frame intervals.
 - Simulation frames are streamed as binary `Float32` data over WebSocket.
 - The frame protocol is dimension-agnostic for position and state vectors.
 - Existing batch simulation workflow remains unchanged (`particle_life.sim`).
+
+Examples:
+
+```bash
+python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 1
+```
+
+```bash
+python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 3
+```
 
 ## Environment setup (.venv)
 
