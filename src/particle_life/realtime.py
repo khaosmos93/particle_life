@@ -19,7 +19,7 @@ WEB_DIR = BASE_DIR / "web"
 class RealtimeSimulation:
     def __init__(self) -> None:
         self.cfg = SimulationConfig(
-            n_particles=400,
+            n_particles=100,  #400,
             state_dim=3,
             dt=1.0,
             steps=0,
@@ -31,7 +31,7 @@ class RealtimeSimulation:
         self.realtime_speed = 0.12
         self.particles = self._init_realtime_particles()
         self.running = True
-        self.substeps = 10
+        self.substeps = 1
         self.send_every = 1
         self.dt_phys = self.cfg.dt / self.substeps
         self.clients: set[WebSocket] = set()
