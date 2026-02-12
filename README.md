@@ -75,9 +75,9 @@ In GitHub Codespaces:
 - WebSocket automatically uses `wss` when the page is loaded over HTTPS.
 
 Notes:
-- `--dt` is the timestep for one frame interval.
+- `--dt` is the base timestep for one frame interval.
 - Physics uses substeps, so effective physics timestep is `dt / substeps`.
-- Binary frames are sent every `--send-every` frame intervals.
+- Binary frames are sent every `--send-every` frame intervals (network decimation only).
 - Realtime mode adds a small random initial velocity kick so motion is visible immediately after startup/reset.
 - Simulation frames are streamed as binary `Float32` data over WebSocket.
 - The frame protocol is dimension-agnostic for position and state vectors.
@@ -119,3 +119,11 @@ pip install -e .
 ### GitHub Codespaces
 
 The devcontainer is configured for Python 3.12.1 and runs the same setup sequence automatically when the Codespace is created, including regenerating `requirements.txt` from `requirements.in` and installing editable project sources.
+
+## Realtime stats and visuals
+
+- The UI stats panel shows:
+  - `FPS`: recent binary frame receive/render rate.
+  - `realtime t`: wall-clock seconds since WebSocket open.
+  - `physics t`: simulated time accumulated on the backend.
+- `point_size` slider updates the existing WebGL `u_pointSize` uniform live and is synchronized with backend params acks.
