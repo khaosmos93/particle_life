@@ -4,12 +4,22 @@
 #
 #    pip-compile requirements.in
 #
+annotated-doc==0.0.4
+    # via fastapi
+annotated-types==0.7.0
+    # via pydantic
+anyio==4.12.1
+    # via
+    #   starlette
+    #   watchfiles
 attrs==25.4.0
     # via cyclopts
 certifi==2026.1.4
     # via requests
 charset-normalizer==3.4.4
     # via requests
+click==8.3.1
+    # via uvicorn
 contourpy==1.3.3
     # via matplotlib
 cycler==0.12.1
@@ -20,10 +30,18 @@ docstring-parser==0.17.0
     # via cyclopts
 docutils==0.22.4
     # via rich-rst
+fastapi==0.128.8
+    # via -r requirements.in
 fonttools==4.61.1
     # via matplotlib
+h11==0.16.0
+    # via uvicorn
+httptools==0.7.1
+    # via uvicorn
 idna==3.11
-    # via requests
+    # via
+    #   anyio
+    #   requests
 imageio==2.37.2
     # via -r requirements.in
 kiwisolver==1.4.9
@@ -68,6 +86,10 @@ pooch==1.9.0
     # via pyvista
 pyarrow==23.0.0
     # via -r requirements.in
+pydantic==2.12.5
+    # via fastapi
+pydantic-core==2.41.5
+    # via pydantic
 pygments==2.19.2
     # via rich
 pyparsing==3.3.2
@@ -76,8 +98,12 @@ python-dateutil==2.9.0.post0
     # via
     #   matplotlib
     #   pandas
+python-dotenv==1.2.1
+    # via uvicorn
 pyvista==0.47.0
     # via -r requirements.in
+pyyaml==6.0.3
+    # via uvicorn
 requests==2.32.5
     # via pooch
 rich==14.3.2
@@ -92,11 +118,32 @@ scooby==0.11.0
     # via pyvista
 six==1.17.0
     # via python-dateutil
+starlette==0.52.1
+    # via fastapi
 tqdm==4.67.3
     # via -r requirements.in
 typing-extensions==4.15.0
-    # via pyvista
+    # via
+    #   anyio
+    #   fastapi
+    #   pydantic
+    #   pydantic-core
+    #   pyvista
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via
+    #   fastapi
+    #   pydantic
 urllib3==2.6.3
     # via requests
+uvicorn[standard]==0.40.0
+    # via -r requirements.in
+uvloop==0.22.1
+    # via uvicorn
 vtk==9.6.0
     # via pyvista
+watchfiles==1.1.1
+    # via uvicorn
+websockets==16.0
+    # via uvicorn
