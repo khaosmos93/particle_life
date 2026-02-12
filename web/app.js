@@ -9,6 +9,52 @@ const protocol = location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${protocol}://${location.host}/ws`);
 ws.binaryType = "arraybuffer";
 
+
+const dtSlider = document.getElementById("dtSlider");
+const substepsSlider = document.getElementById("substepsSlider");
+const sendEverySlider = document.getElementById("sendEverySlider");
+const dtValue = document.getElementById("dtValue");
+const substepsValue = document.getElementById("substepsValue");
+const sendEveryValue = document.getElementById("sendEveryValue");
+
+function sendControlUpdate() {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(
+    JSON.stringify({
+      type: "update_params",
+      dt: parseFloat(dtSlider.value),
+      substeps: parseInt(substepsSlider.value, 10),
+      send_every: parseInt(sendEverySlider.value, 10),
+    }),
+  );
+}
+
+function updateControlValues() {
+  dtValue.textContent = Number(dtSlider.value).toFixed(2);
+  substepsValue.textContent = substepsSlider.value;
+  sendEveryValue.textContent = sendEverySlider.value;
+}
+
+updateControlValues();
+
+dtSlider.oninput = () => {
+  updateControlValues();
+  sendControlUpdate();
+};
+
+substepsSlider.oninput = () => {
+  updateControlValues();
+  sendControlUpdate();
+};
+
+sendEverySlider.oninput = () => {
+  updateControlValues();
+  sendControlUpdate();
+};
+
 const vertSrc = `
 attribute vec3 a_pos;
 attribute vec3 a_rgb;
