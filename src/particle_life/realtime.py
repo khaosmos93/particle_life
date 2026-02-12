@@ -21,7 +21,7 @@ class RealtimeSimulation:
         self.cfg = SimulationConfig(
             n_particles=400,
             state_dim=3,
-            dt=0.01,
+            dt=1.0,
             steps=0,
             seed=0,
             box_size=1.0,
