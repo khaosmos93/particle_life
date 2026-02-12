@@ -48,6 +48,28 @@ COUPLING_FNS = {
 }
 
 
+def pack_frame(particles, box_size):
+    pos = np.stack([p.pos for p in particles])
+    state = np.stack([p.state for p in particles])
+
+    if pos.shape[1] == 2:
+        pos = np.pad(pos, ((0, 0), (0, 1)))
+
+    if state.shape[1] < 3:
+        state = np.pad(state, ((0, 0), (0, 3 - state.shape[1])))
+
+    pos_dim = pos.shape[1]
+    state_dim = state.shape[1]
+    n_particles = pos.shape[0]
+
+    header_i = np.array([pos_dim, state_dim, n_particles], dtype=np.int32)
+    header_f = np.array([box_size], dtype=np.float32)
+
+    body = np.concatenate([pos, state], axis=1).astype(np.float32)
+
+    return header_i.tobytes() + header_f.tobytes() + body.tobytes()
+
+
 class RealtimeSimulation:
     def __init__(self) -> None:
         self.cfg = SimulationConfig(
@@ -427,28 +449,6 @@ async def list_presets() -> JSONResponse:
             except Exception:
                 continue
     return JSONResponse(presets)
-
-
-def pack_frame(particles, box_size):
-    pos = np.stack([p.pos for p in particles])
-    state = np.stack([p.state for p in particles])
-
-    if pos.shape[1] == 2:
-        pos = np.pad(pos, ((0, 0), (0, 1)))
-
-    if state.shape[1] < 3:
-        state = np.pad(state, ((0, 0), (0, 3 - state.shape[1])))
-
-    pos_dim = pos.shape[1]
-    state_dim = state.shape[1]
-    n_particles = pos.shape[0]
-
-    header_i = np.array([pos_dim, state_dim, n_particles], dtype=np.int32)
-    header_f = np.array([box_size], dtype=np.float32)
-
-    body = np.concatenate([pos, state], axis=1).astype(np.float32)
-
-    return header_i.tobytes() + header_f.tobytes() + body.tobytes()
 
 
 async def physics_loop() -> None:
