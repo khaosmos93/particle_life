@@ -154,7 +154,7 @@ class RealtimeSimulation:
             self._reset_buffers()
             return {"type": "seed", "seed": self.cfg.seed}
 
-    def _parse_preset(self, data: dict, source_name: str) -> dict:
+    def _parse_preset(self, data: dict, source_name: str, base_cfg: dict) -> dict:
         world = data["world"]
         model = data["model"]
         sim = data["sim"]
@@ -187,7 +187,7 @@ class RealtimeSimulation:
             )
 
         interaction = model["interaction"]
-        cfg_dict = asdict(self.cfg)
+        cfg_dict = dict(base_cfg)
         cfg_dict.update(
             {
                 "n_particles": len(parsed_particles),
@@ -222,21 +222,27 @@ class RealtimeSimulation:
             },
         }
 
+    def _load_and_parse_preset_sync(self, path: Path, preset_name: str, base_cfg: dict) -> dict:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return self._parse_preset(data, preset_name, base_cfg)
+
     async def load_preset(self, preset_filename: str) -> dict:
+        preset_name = Path(preset_filename).name
+        if preset_name != preset_filename or not preset_name.endswith(".json"):
+            raise ValueError("Invalid preset filename")
+
+        path = PRESETS_DIR / preset_name
+        path_resolved = path.resolve()
+        presets_root = PRESETS_DIR.resolve()
+        if not path_resolved.is_file() or presets_root not in path_resolved.parents:
+            raise ValueError("Preset file not found")
+
         async with self.lock:
-            preset_name = Path(preset_filename).name
-            if preset_name != preset_filename or not preset_name.endswith(".json"):
-                raise ValueError("Invalid preset filename")
+            base_cfg = asdict(self.cfg)
 
-            path = PRESETS_DIR / preset_name
-            path_resolved = path.resolve()
-            presets_root = PRESETS_DIR.resolve()
-            if not path_resolved.is_file() or presets_root not in path_resolved.parents:
-                raise ValueError("Preset file not found")
+        parsed = await asyncio.to_thread(self._load_and_parse_preset_sync, path_resolved, preset_name, base_cfg)
 
-            data = json.loads(path_resolved.read_text(encoding="utf-8"))
-            parsed = self._parse_preset(data, preset_name)
-
+        async with self.lock:
             self.cfg = parsed["cfg"]
             self.speed = parsed["speed"]
             self.particles = parsed["particles"]
@@ -462,13 +468,17 @@ async def physics_loop() -> None:
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
+    print("[ws] client connected")
     sim.clients.add(ws)
-    sender_task = asyncio.create_task(sim.sender_loop(ws))
+    tasks = [asyncio.create_task(sim.sender_loop(ws))]
     try:
         await ws.send_text(json.dumps(await sim.get_params_payload()))
 
         while True:
             message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                print("[ws] client disconnected")
+                break
 
             if message.get("text") is not None:
                 msg = json.loads(message["text"])
@@ -484,11 +494,21 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await ws.send_text(json.dumps(seed_ack))
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "load_preset":
+                    preset_name = str(msg.get("preset", ""))
+                    print(f"[ws] load_preset requested: {preset_name}")
                     try:
-                        preset_ack = await sim.load_preset(str(msg.get("preset", "")))
+                        preset_ack = await sim.load_preset(preset_name)
                     except ValueError as exc:
-                        await ws.send_text(json.dumps({"type": "error", "error": str(exc)}))
+                        print(f"[ws] load_preset failed: {exc}")
+                        await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
                         continue
+                    except Exception as exc:
+                        print(f"[ws] load_preset failed: {exc}")
+                        await ws.send_text(json.dumps({"type": "error", "message": "Failed to load preset"}))
+                        continue
+                    print(
+                        f"[ws] load_preset success: particles={sim.cfg.n_particles} box_size={sim.cfg.box_size}"
+                    )
                     await ws.send_text(json.dumps(preset_ack))
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "update_params":
@@ -519,12 +539,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
             elif message.get("bytes") is not None:
                 continue
-    except (WebSocketDisconnect, json.JSONDecodeError, TypeError, ValueError, HTTPException):
+    except WebSocketDisconnect:
+        print("[ws] client disconnected")
+    except (json.JSONDecodeError, TypeError, ValueError, HTTPException):
         pass
     finally:
-        sender_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await sender_task
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         sim.clients.discard(ws)
 
 
