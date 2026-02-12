@@ -41,17 +41,17 @@ Control messages stay JSON text over WebSocket.
 
 ## Initial-condition presets
 
-Preset files live in:
+Presets are defined in Python (no preset JSON files):
 
 ```text
-data/initial_conditions/
+src/particle_life/presets.py
 ```
 
 The realtime server exposes:
 - `GET /api/presets`: list available preset metadata.
-- WebSocket `{ "type": "load_preset", "preset": "<file>.json" }`: load and reset to that preset.
+- WebSocket `{ "type": "load_preset", "preset": "<preset_id>" }`: load and reset to that preset.
 
-### Preset JSON schema
+### Preset payload schema
 
 ```json
 {
@@ -135,15 +135,15 @@ Color mapping is render-side only; backend continues to stream raw states in bin
 ## Included structured presets
 
 Ten structured presets are provided:
-1. `two_clusters.json`
-2. `checkerboard.json`
-3. `concentric_rings.json`
-4. `stripe_bands.json`
-5. `spiral_arms.json`
-6. `yin_yang.json`
-7. `four_quadrants.json`
-8. `line_vs_cloud.json`
-9. `two_lanes.json`
-10. `radial_burst.json`
+1. `two_clusters`
+2. `checkerboard`
+3. `concentric_rings`
+4. `stripe_bands`
+5. `spiral_arms`
+6. `yin_yang`
+7. `four_quadrants`
+8. `line_vs_cloud`
+9. `two_lanes`
+10. `radial_burst`
 
 All presets are 2D, use `box_size=1.0`, `state_dim=3`, and the two canonical state vectors.

@@ -130,8 +130,8 @@ async function loadPresets() {
     presetSelect.innerHTML = "";
     for (const preset of presets) {
       const opt = document.createElement("option");
-      opt.value = preset.file;
-      opt.textContent = `${preset.name} (${preset.file})`;
+      opt.value = preset.id;
+      opt.textContent = `${preset.name} (${preset.id})`;
       opt.title = preset.description || "";
       presetSelect.appendChild(opt);
     }

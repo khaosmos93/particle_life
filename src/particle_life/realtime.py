@@ -12,12 +12,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from particle_life.particles import Particle, minimum_image, neighbor_pairs, pair_force_from_delta
+from particle_life.presets import list_presets as list_preset_specs, load_preset as load_preset_module
 from particle_life.sim import SimulationConfig, init_particles
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WEB_DIR = BASE_DIR / "web"
-PRESETS_DIR = BASE_DIR / "data" / "initial_conditions"
-
 # Problem: loading a preset can make runtime FPS collapse due to work done on the async path
 # (lock contention, frame packing cost, and websocket send backpressure) after apply.
 
@@ -215,11 +214,17 @@ class RealtimeSimulation:
             state = np.asarray(p["state"], dtype=np.float64)
             if not (np.array_equal(state, canonical[0]) or np.array_equal(state, canonical[1])):
                 raise ValueError(f"Particle {idx} state does not match canonical_states[0] or canonical_states[1]")
+            pos = np.asarray(p["pos"], dtype=np.float64)
+            vel = np.asarray(p["vel"], dtype=np.float64)
+            if pos.shape != (int(world["dim"]),):
+                raise ValueError(f"Particle {idx} position must have dim={int(world['dim'])}")
+            if vel.shape != (int(world["dim"]),):
+                raise ValueError(f"Particle {idx} velocity must have dim={int(world['dim'])}")
             parsed_particles.append(
                 Particle(
                     m=float(p.get("m", 1.0)),
-                    pos=np.asarray(p["pos"], dtype=np.float64),
-                    vel=np.asarray(p["vel"], dtype=np.float64),
+                    pos=pos,
+                    vel=vel,
                     state=state,
                 )
             )
@@ -231,7 +236,7 @@ class RealtimeSimulation:
                 "n_particles": len(parsed_particles),
                 "state_dim": int(model["state_dim"]),
                 "dt": float(sim["dt"]),
-                "seed": int(sim["seed"]),
+                "seed": int(sim.get("seed", 0)),
                 "box_size": float(world["box_size"]),
                 "r_min": float(interaction["r_repulse"]),
                 "r_cut": float(interaction["r_cut"]),
@@ -241,9 +246,12 @@ class RealtimeSimulation:
             }
         )
 
+        if len(parsed_particles) == 0:
+            raise ValueError("Preset has no particles")
+
         return {
-            "name": data["meta"]["name"],
-            "description": data["meta"].get("description", ""),
+            "name": data.get("name", source_name),
+            "description": data.get("description", ""),
             "source": source_name,
             "cfg": SimulationConfig(**cfg_dict),
             "speed": float(sim["speed"]),
@@ -260,25 +268,15 @@ class RealtimeSimulation:
             },
         }
 
-    def _load_and_parse_preset_sync(self, path: Path, preset_name: str, base_cfg: dict) -> dict:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return self._parse_preset(data, preset_name, base_cfg)
-
-    async def load_preset(self, preset_filename: str) -> dict:
-        preset_name = Path(preset_filename).name
-        if preset_name != preset_filename or not preset_name.endswith(".json"):
-            raise ValueError("Invalid preset filename")
-
-        path = PRESETS_DIR / preset_name
-        path_resolved = path.resolve()
-        presets_root = PRESETS_DIR.resolve()
-        if not path_resolved.is_file() or presets_root not in path_resolved.parents:
-            raise ValueError("Preset file not found")
+    async def load_preset(self, preset_id: str) -> dict:
+        if not preset_id:
+            raise ValueError("Preset id is required")
 
         async with self.locked():
             base_cfg = asdict(self.cfg)
 
-        parsed = await asyncio.to_thread(self._load_and_parse_preset_sync, path_resolved, preset_name, base_cfg)
+        data = load_preset_module(preset_id)
+        parsed = self._parse_preset(data, preset_id, base_cfg)
 
         async with self.locked():
             self.cfg = parsed["cfg"]
@@ -293,7 +291,7 @@ class RealtimeSimulation:
 
             return {
                 "type": "preset_loaded",
-                "preset": preset_name,
+                "preset": preset_id,
                 "name": parsed["name"],
                 "seed": self.cfg.seed,
                 "dt": self.cfg.dt,
@@ -515,22 +513,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/presets")
 async def list_presets() -> JSONResponse:
-    presets = []
-    if PRESETS_DIR.exists():
-        for path in sorted(PRESETS_DIR.glob("*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                meta = data.get("meta", {})
-                presets.append(
-                    {
-                        "file": path.name,
-                        "name": meta.get("name", path.stem),
-                        "description": meta.get("description", ""),
-                    }
-                )
-            except Exception:
-                continue
-    return JSONResponse(presets)
+    return JSONResponse(list_preset_specs())
 
 
 async def physics_loop() -> None:
@@ -574,10 +557,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await ws.send_text(json.dumps(seed_ack))
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "load_preset":
-                    preset_name = str(msg.get("preset", ""))
-                    print(f"[ws] load_preset requested: {preset_name}")
+                    preset_id = str(msg.get("preset", ""))
+                    print(f"[ws] load_preset requested: {preset_id}")
                     try:
-                        preset_ack = await sim.load_preset(preset_name)
+                        preset_ack = await sim.load_preset(preset_id)
                     except ValueError as exc:
                         print(f"[ws] load_preset failed: {exc}")
                         await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
