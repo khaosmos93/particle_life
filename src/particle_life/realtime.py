@@ -33,6 +33,7 @@ class RealtimeSimulation:
         self.running = True
         self.substeps = 10
         self.send_every = 1
+        self.dt_phys = self.cfg.dt / self.substeps
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
 
@@ -65,15 +66,24 @@ class RealtimeSimulation:
             self.cfg = SimulationConfig(**cfg_dict)
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
+            self.dt_phys = self.cfg.dt / self.substeps
+
+    async def update_realtime_params(self, dt: float, substeps: int, send_every: int) -> None:
+        async with self.lock:
+            cfg_dict = asdict(self.cfg)
+            cfg_dict["dt"] = float(dt)
+            self.cfg = SimulationConfig(**cfg_dict)
+            self.substeps = max(1, int(substeps))
+            self.send_every = max(1, int(send_every))
+            self.dt_phys = self.cfg.dt / self.substeps
 
     async def tick(self, frame_interval_idx: int) -> bytes | None:
         async with self.lock:
             if not self.running:
                 return None
 
-            dt_phys = self.cfg.dt / self.substeps
             cfg_dict = asdict(self.cfg)
-            cfg_dict["dt"] = dt_phys
+            cfg_dict["dt"] = self.dt_phys
             step_cfg = SimulationConfig(**cfg_dict)
 
             for _ in range(self.substeps):
@@ -157,17 +167,27 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     sim.clients.add(ws)
     try:
         while True:
-            text = await ws.receive_text()
-            msg = json.loads(text)
-            cmd = msg.get("type")
+            message = await ws.receive()
 
-            if cmd == "set_running":
-                await sim.set_running(bool(msg.get("running", True)))
-            elif cmd == "set_params":
-                await sim.set_params(msg.get("params", {}))
-            elif cmd == "reset":
-                await sim.reset()
-    except (WebSocketDisconnect, json.JSONDecodeError):
+            if message.get("text") is not None:
+                msg = json.loads(message["text"])
+                cmd = msg.get("type")
+
+                if cmd == "set_running":
+                    await sim.set_running(bool(msg.get("running", True)))
+                elif cmd == "set_params":
+                    await sim.set_params(msg.get("params", {}))
+                elif cmd == "update_params":
+                    await sim.update_realtime_params(
+                        dt=msg.get("dt", sim.cfg.dt),
+                        substeps=msg.get("substeps", sim.substeps),
+                        send_every=msg.get("send_every", sim.send_every),
+                    )
+                elif cmd == "reset":
+                    await sim.reset()
+            elif message.get("bytes") is not None:
+                continue
+    except (WebSocketDisconnect, json.JSONDecodeError, TypeError, ValueError):
         pass
     finally:
         sim.clients.discard(ws)
@@ -190,5 +210,6 @@ if __name__ == "__main__":
     cfg_dict = asdict(sim.cfg)
     cfg_dict["dt"] = args.dt
     sim.cfg = SimulationConfig(**cfg_dict)
+    sim.dt_phys = sim.cfg.dt / sim.substeps
 
     uvicorn.run("particle_life.realtime:app", host=args.host, port=args.port)

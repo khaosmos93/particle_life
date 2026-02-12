@@ -93,6 +93,13 @@ python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 1
 python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 3
 ```
 
+
+## Realtime controls
+
+- Sliders in the WebGL UI allow dynamic tuning of `dt`, `substeps`, and `send_every`.
+- Changes apply immediately to the running simulation stream.
+- No server restart is required.
+
 ## Environment setup (.venv)
 
 This project standardizes on a project-local virtual environment at `.venv/`.

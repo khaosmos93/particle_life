@@ -35,6 +35,35 @@
         align-items: center;
       }
 
+      #controls {
+        position: fixed;
+        top: 72px;
+        left: 12px;
+        z-index: 10;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 8px;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      #controls label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #fff;
+      }
+
+      #controls input[type="range"] {
+        width: 140px;
+      }
+
+      #controls span {
+        min-width: 36px;
+        text-align: right;
+      }
+
       button,
       input {
         background: #1d2330;
@@ -58,6 +87,23 @@
       <button id="toggleBtn">Pause</button>
       <button id="resetBtn">Reset</button>
       <label>Point Size <input id="pointSize" type="range" min="1" max="8" step="0.5" value="3" /></label>
+    </div>
+    <div id="controls">
+      <label>
+        dt:
+        <input type="range" id="dtSlider" min="0.01" max="5" step="0.01" value="1" />
+        <span id="dtValue">1.00</span>
+      </label>
+      <label>
+        substeps:
+        <input type="range" id="substepsSlider" min="1" max="100" step="1" value="10" />
+        <span id="substepsValue">10</span>
+      </label>
+      <label>
+        send_every:
+        <input type="range" id="sendEverySlider" min="1" max="20" step="1" value="1" />
+        <span id="sendEveryValue">1</span>
+      </label>
     </div>
     <script src="/static/app.js"></script>
   </body>
