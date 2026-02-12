@@ -8,18 +8,16 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from particle_life.initializers import COUPLING_FNS, build_initial_state
+from particle_life.initializers import build_initial_state
 from particle_life.particles import minimum_image, neighbor_pairs, pair_force_from_delta
-from particle_life.presets import list_presets as list_preset_specs
 from particle_life.sim import SimulationConfig
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 WEB_DIR = BASE_DIR / "web"
-# Problem: loading a preset can make runtime FPS collapse due to work done on the async path
-# (lock contention, frame packing cost, and websocket send backpressure) after apply.
+
 
 
 def pack_frame(particles, box_size):
@@ -102,10 +100,6 @@ class RealtimeSimulation:
             "noise": self.cfg.sigma,
             "damping": self.cfg.gamma,
         }
-        self.canonical_states: np.ndarray | None = None
-        self.coupling_fn_name: str | None = None
-        self.coupling_params: dict = {}
-        self.current_preset_id: str | None = None
         self.rng = np.random.default_rng(self.cfg.seed)
         self.particles = self._init_realtime_particles()
         self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
@@ -151,52 +145,37 @@ class RealtimeSimulation:
     async def reset(self) -> None:
         async with self.locked():
             cfg = self.cfg
-            preset_id = self.current_preset_id
         cfg_new, particles_new, meta = await asyncio.to_thread(
-            build_initial_state, cfg, preset_id, cfg.seed
+            build_initial_state, cfg, None, cfg.seed
         )
         async with self.locked():
             self.cfg = cfg_new
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = particles_new
             self.speed = float(meta.get("speed", self.speed))
-            self.canonical_states = meta.get("canonical_states")
-            self.coupling_fn_name = meta.get("coupling_fn")
-            self.coupling_params = dict(meta.get("coupling_params", {}))
             self.interaction = dict(meta.get("interaction", self.interaction))
             self._reset_buffers()
 
-    async def _apply_initial_state(self, preset_id: str | None, seed: int | None) -> dict:
+    async def _apply_initial_state(self, seed: int | None) -> dict:
         async with self.locked():
             cfg = self.cfg
-        cfg_new, particles_new, meta = await asyncio.to_thread(build_initial_state, cfg, preset_id, seed)
+        cfg_new, particles_new, meta = await asyncio.to_thread(build_initial_state, cfg, None, seed)
         async with self.locked():
             self.cfg = cfg_new
             self.particles = particles_new
             self.rng = np.random.default_rng(self.cfg.seed)
-            self.current_preset_id = preset_id
-            self.speed = float(meta.get("speed", self.speed if preset_id is None else 1.0))
-            self.canonical_states = meta.get("canonical_states")
-            self.coupling_fn_name = meta.get("coupling_fn")
-            self.coupling_params = dict(meta.get("coupling_params", {}))
+            self.speed = float(meta.get("speed", self.speed))
             self.interaction = dict(meta.get("interaction", self.interaction))
             self._reset_buffers()
             return {
-                "type": "preset_loaded" if preset_id is not None else "seed",
-                "preset": preset_id,
-                "name": meta.get("name", preset_id),
+                "type": "seed",
                 "seed": self.cfg.seed,
                 "dt": self.cfg.dt,
                 "speed": self.speed,
             }
 
     async def set_seed(self, seed: int | None) -> dict:
-        return await self._apply_initial_state(self.current_preset_id, seed)
-
-    async def load_preset(self, preset_id: str, seed: int | None = None) -> dict:
-        if not preset_id:
-            raise ValueError("Preset id is required")
-        return await self._apply_initial_state(preset_id, seed)
+        return await self._apply_initial_state(seed)
 
     async def set_params(self, params: dict) -> None:
         async with self.locked():
@@ -212,10 +191,6 @@ class RealtimeSimulation:
             self.target_fps = max(1, int(params.get("target_fps", self.target_fps)))
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
-            self.canonical_states = None
-            self.coupling_fn_name = None
-            self.coupling_params = {}
-            self.current_preset_id = None
             self.interaction = {
                 "r_repulse": self.cfg.r_min,
                 "r_cut": self.cfg.r_cut,
@@ -279,12 +254,8 @@ class RealtimeSimulation:
             }
 
     def _coupling_value(self, si: np.ndarray, sj: np.ndarray) -> float:
-        if self.coupling_fn_name is None or self.canonical_states is None:
-            denom = max(1, si.size)
-            return float(np.tanh(np.dot(si, sj) / denom))
-
-        fn = COUPLING_FNS[self.coupling_fn_name]
-        return float(fn(si, sj, self.canonical_states, self.coupling_params))
+        denom = max(1, si.size)
+        return float(np.tanh(np.dot(si, sj) / denom))
 
     def _compute_forces(self) -> np.ndarray:
         n = len(self.particles)
@@ -412,11 +383,6 @@ async def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
 
 
-@app.get("/api/presets")
-async def list_presets() -> JSONResponse:
-    return JSONResponse(list_preset_specs())
-
-
 async def physics_loop() -> None:
     frame_interval_idx = 0
     while True:
@@ -457,25 +423,6 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     seed_raw = msg.get("seed", None)
                     seed_ack = await sim.set_seed(None if seed_raw is None else int(seed_raw))
                     await ws.send_text(json.dumps(seed_ack))
-                    await ws.send_text(json.dumps(await sim.get_params_payload()))
-                elif cmd == "load_preset":
-                    preset_id = str(msg.get("preset", ""))
-                    print(f"[ws] load_preset requested: {preset_id}")
-                    try:
-                        seed_raw = msg.get("seed", None)
-                        preset_ack = await sim.load_preset(preset_id, None if seed_raw is None else int(seed_raw))
-                    except ValueError as exc:
-                        print(f"[ws] load_preset failed: {exc}")
-                        await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
-                        continue
-                    except Exception as exc:
-                        print(f"[ws] load_preset failed: {exc}")
-                        await ws.send_text(json.dumps({"type": "error", "message": "Failed to load preset"}))
-                        continue
-                    print(
-                        f"[ws] load_preset success: particles={sim.cfg.n_particles} box_size={sim.cfg.box_size}"
-                    )
-                    await ws.send_text(json.dumps(preset_ack))
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "update_params":
                     dt = float(msg.get("dt", sim.cfg.dt))

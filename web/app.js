@@ -14,7 +14,6 @@ const speedSlider = document.getElementById("speedSlider");
 const sendEverySlider = document.getElementById("sendEverySlider");
 const pointSizeSlider = document.getElementById("pointSize");
 const seedInput = document.getElementById("seedInput");
-const presetSelect = document.getElementById("presetSelect");
 const colorSchemeSelect = document.getElementById("colorSchemeSelect");
 
 const dtValue = document.getElementById("dtValue");
@@ -123,25 +122,7 @@ function updatePointSize(newSize) {
   gl.uniform1f(uPointSize, pointSize);
 }
 
-async function loadPresets() {
-  try {
-    const res = await fetch("/api/presets");
-    const presets = await res.json();
-    presetSelect.innerHTML = "";
-    for (const preset of presets) {
-      const opt = document.createElement("option");
-      opt.value = preset.id;
-      opt.textContent = `${preset.name} (${preset.id})`;
-      opt.title = preset.description || "";
-      presetSelect.appendChild(opt);
-    }
-  } catch (_err) {
-    presetSelect.innerHTML = "";
-  }
-}
-
 updateControlValues();
-loadPresets();
 
 dtSlider.oninput = () => {
   updateControlValues();
@@ -179,13 +160,6 @@ document.getElementById("applySeedBtn").addEventListener("click", () => {
     return;
   }
   ws.send(JSON.stringify({ type: "set_seed", seed }));
-});
-
-document.getElementById("loadPresetBtn").addEventListener("click", () => {
-  if (!presetSelect.value) {
-    return;
-  }
-  ws.send(JSON.stringify({ type: "load_preset", preset: presetSelect.value }));
 });
 
 ws.onopen = () => {
