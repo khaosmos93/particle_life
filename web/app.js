@@ -10,12 +10,12 @@ const ws = new WebSocket(`${protocol}://${location.host}/ws`);
 ws.binaryType = "arraybuffer";
 
 const dtSlider = document.getElementById("dtSlider");
-const substepsSlider = document.getElementById("substepsSlider");
+const speedSlider = document.getElementById("speedSlider");
 const sendEverySlider = document.getElementById("sendEverySlider");
 const pointSizeSlider = document.getElementById("pointSize");
 
 const dtValue = document.getElementById("dtValue");
-const substepsValue = document.getElementById("substepsValue");
+const speedValue = document.getElementById("speedValue");
 const sendEveryValue = document.getElementById("sendEveryValue");
 const pointSizeValue = document.getElementById("pointSizeValue");
 
@@ -38,7 +38,7 @@ function sendControlUpdate() {
     JSON.stringify({
       type: "update_params",
       dt: parseFloat(dtSlider.value),
-      substeps: parseInt(substepsSlider.value, 10),
+      speed: parseFloat(speedSlider.value),
       send_every: parseInt(sendEverySlider.value, 10),
       point_size: parseFloat(pointSizeSlider.value),
     }),
@@ -47,7 +47,7 @@ function sendControlUpdate() {
 
 function updateControlValues() {
   dtValue.textContent = Number(dtSlider.value).toFixed(2);
-  substepsValue.textContent = substepsSlider.value;
+  speedValue.textContent = Number(speedSlider.value).toFixed(1);
   sendEveryValue.textContent = sendEverySlider.value;
   pointSizeValue.textContent = Number(pointSizeSlider.value).toFixed(1);
 }
@@ -73,7 +73,7 @@ dtSlider.oninput = () => {
   sendControlUpdate();
 };
 
-substepsSlider.oninput = () => {
+speedSlider.oninput = () => {
   updateControlValues();
   sendControlUpdate();
 };
@@ -211,7 +211,7 @@ ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.type === "params") {
       dtSlider.value = String(msg.dt);
-      substepsSlider.value = String(msg.substeps);
+      speedSlider.value = String(msg.speed);
       sendEverySlider.value = String(msg.send_every);
       if (typeof msg.point_size === "number") {
         pointSizeSlider.value = String(msg.point_size);
