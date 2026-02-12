@@ -83,7 +83,8 @@
       }
 
       button,
-      input {
+      input,
+      select {
         background: #1d2330;
         color: #fff;
         border: 1px solid #3c4354;
@@ -96,6 +97,11 @@
         display: flex;
         gap: 6px;
         align-items: center;
+      }
+
+      .row {
+        display: flex;
+        gap: 6px;
       }
     </style>
   </head>
@@ -125,6 +131,29 @@
         point_size:
         <input type="range" id="pointSize" min="1" max="50" step="0.5" value="30" />
         <span id="pointSizeValue">20.0</span>
+      </label>
+      <label>
+        seed:
+        <input type="number" id="seedInput" step="1" value="0" />
+      </label>
+      <div class="row">
+        <button id="randomizeSeedBtn">Randomize Seed</button>
+        <button id="applySeedBtn">Apply Seed</button>
+      </div>
+      <label>
+        preset:
+        <select id="presetSelect"></select>
+      </label>
+      <button id="loadPresetBtn">Load Preset</button>
+      <label>
+        Color scheme:
+        <select id="colorSchemeSelect">
+          <option value="direct_clamp">direct_clamp</option>
+          <option value="normalize">normalize</option>
+          <option value="abs">abs</option>
+          <option value="softmax">softmax</option>
+          <option value="hsv_like">hsv_like</option>
+        </select>
       </label>
     </div>
     <div id="stats">
