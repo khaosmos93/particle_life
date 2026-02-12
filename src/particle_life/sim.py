@@ -6,6 +6,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from particle_life.initializers import build_initial_state, resolve_seed
 from particle_life.particles import Particle, compute_net_forces
 
 
@@ -30,13 +31,8 @@ class SimulationConfig:
 
 
 def init_particles(cfg: SimulationConfig) -> list[Particle]:
-    rng = np.random.default_rng(cfg.seed)
-    mass = 1.0
-    pos = rng.uniform(0.0, cfg.box_size, size=(cfg.n_particles, 2))
-    vel = 0.01 * rng.normal(size=(cfg.n_particles, 2))
-    state = rng.normal(size=(cfg.n_particles, cfg.state_dim))
-
-    return [Particle(mass, pos[i], vel[i], state[i]) for i in range(cfg.n_particles)]
+    _, particles, _ = build_initial_state(cfg, preset_id=None, seed=cfg.seed)
+    return particles
 
 
 def step(particles: list[Particle], cfg: SimulationConfig, rng: np.random.Generator) -> None:
@@ -105,8 +101,8 @@ def write_chunk(out_dir: str, chunk_id: int, table: pa.Table) -> None:
 class Simulator:
     def __init__(self, cfg: SimulationConfig):
         self.cfg = cfg
-        self.rng = np.random.default_rng(cfg.seed)
-        self.particles = init_particles(cfg)
+        _, self.rng = resolve_seed(cfg.seed)
+        _, self.particles, _ = build_initial_state(cfg, preset_id=None, seed=cfg.seed)
 
     def run(self, out_path: str) -> None:
         os.makedirs(out_path, exist_ok=True)
@@ -152,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk", type=int, default=1, help="Number of steps per Parquet file")
     parser.add_argument("--n", type=int, default=200, help="Number of particles")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step size")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--box", type=float, default=1.0, help="Box size")
     return parser.parse_args()
 
@@ -166,10 +162,13 @@ def main() -> None:
         dt=args.dt,
         steps=args.steps,
         chunk=args.chunk,
-        seed=args.seed,
+        seed=0 if args.seed is None else args.seed,
         box_size=args.box,
         out_path=args.out,
     )
+    if args.seed is None:
+        seed_used, _ = resolve_seed(None)
+        cfg.seed = seed_used
     Simulator(cfg).run(args.out)
 
 

@@ -226,7 +226,11 @@ def list_presets() -> list[dict]:
     return items
 
 
-def load_preset(preset_id: str) -> dict:
+def build_preset(preset_id: str) -> dict:
     if preset_id not in _PRESETS:
         raise ValueError(f"Unknown preset: {preset_id}")
     return _PRESETS[preset_id]()
+
+
+def load_preset(preset_id: str) -> dict:
+    return build_preset(preset_id)
