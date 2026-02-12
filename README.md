@@ -78,3 +78,23 @@ Notes:
 - Simulation frames are streamed as binary `Float32` data over WebSocket.
 - The frame protocol is dimension-agnostic for position and state vectors.
 - Existing batch simulation workflow remains unchanged (`particle_life.sim`).
+
+## Environment setup (.venv)
+
+This project standardizes on a project-local virtual environment at `.venv/`.
+
+Use the exact setup sequence below (POSIX shell):
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -U 'pip<25.3'
+pip install pip-tools
+pip-compile requirements.in
+pip install -r requirements.txt
+pip install -e .
+```
+
+### GitHub Codespaces
+
+The devcontainer is configured for Python 3.12.1 and runs the same setup sequence automatically when the Codespace is created, including regenerating `requirements.txt` from `requirements.in` and installing editable project sources.
