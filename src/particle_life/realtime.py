@@ -47,8 +47,8 @@ class RealtimeSimulation:
 
     def _init_realtime_particles(self):
         particles = init_particles(self.cfg)
-        for p in particles:
-            p.vel = p.vel + self.realtime_speed * self.rng.normal(size=2)
+        # for p in particles:
+        #     p.vel = p.vel + self.realtime_speed * self.rng.normal(size=2)
         return particles
 
     def _recompute_dt_phys(self) -> None:
