@@ -33,16 +33,33 @@ class RealtimeSimulation:
         self.running = True
         self.substeps = 1
         self.send_every = 1
+        self.point_size = 3.0
+        self.physics_time = 0.0
         self.dt_phys = self.cfg.dt / self.substeps
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
-
 
     def _init_realtime_particles(self):
         particles = init_particles(self.cfg)
         for p in particles:
             p.vel = p.vel + self.realtime_speed * self.rng.normal(size=2)
         return particles
+
+    def _recompute_dt_phys(self) -> None:
+        self.dt_phys = self.cfg.dt / self.substeps
+
+    def _sim_time_per_interval(self) -> float:
+        return self.cfg.dt
+
+    def _params_payload(self) -> dict:
+        return {
+            "type": "params",
+            "dt": self.cfg.dt,
+            "substeps": self.substeps,
+            "send_every": self.send_every,
+            "point_size": self.point_size,
+            "physics_t": self.physics_time,
+        }
 
     async def set_running(self, value: bool) -> None:
         async with self.lock:
@@ -52,6 +69,7 @@ class RealtimeSimulation:
         async with self.lock:
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
+            self.physics_time = 0.0
 
     async def set_params(self, params: dict) -> None:
         async with self.lock:
@@ -66,9 +84,16 @@ class RealtimeSimulation:
             self.cfg = SimulationConfig(**cfg_dict)
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
-            self.dt_phys = self.cfg.dt / self.substeps
+            self.physics_time = 0.0
+            self._recompute_dt_phys()
 
-    async def update_realtime_params(self, dt: float, substeps: int, send_every: int) -> dict:
+    async def update_realtime_params(
+        self,
+        dt: float,
+        substeps: int,
+        send_every: int,
+        point_size: float | None = None,
+    ) -> dict:
         async with self.lock:
             if dt > 0:
                 cfg_dict = asdict(self.cfg)
@@ -76,13 +101,18 @@ class RealtimeSimulation:
                 self.cfg = SimulationConfig(**cfg_dict)
             self.substeps = max(1, int(substeps))
             self.send_every = max(1, int(send_every))
-            self.dt_phys = self.cfg.dt / self.substeps
-            return {
-                "type": "params",
-                "dt": self.cfg.dt,
-                "substeps": self.substeps,
-                "send_every": self.send_every,
-            }
+            if point_size is not None and point_size > 0:
+                self.point_size = float(point_size)
+            self._recompute_dt_phys()
+            return self._params_payload()
+
+    async def get_params_payload(self) -> dict:
+        async with self.lock:
+            return self._params_payload()
+
+    async def get_stats_payload(self) -> dict:
+        async with self.lock:
+            return {"type": "stats", "physics_t": self.physics_time}
 
     async def tick(self, frame_interval_idx: int) -> bytes | None:
         async with self.lock:
@@ -95,6 +125,7 @@ class RealtimeSimulation:
 
             for _ in range(self.substeps):
                 step(self.particles, step_cfg, self.rng)
+            self.physics_time += self._sim_time_per_interval()
 
             if frame_interval_idx % self.send_every == 0:
                 return pack_frame(self.particles, self.cfg.box_size)
@@ -169,14 +200,24 @@ async def simulation_loop() -> None:
         await asyncio.sleep(1 / 60)
 
 
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     sim.clients.add(ws)
+    last_stats_sent = asyncio.get_running_loop().time()
     try:
+        await ws.send_text(json.dumps(await sim.get_params_payload()))
+
         while True:
-            message = await ws.receive()
+            now = asyncio.get_running_loop().time()
+            if now - last_stats_sent >= 1.0:
+                await ws.send_text(json.dumps(await sim.get_stats_payload()))
+                last_stats_sent = now
+
+            try:
+                message = await asyncio.wait_for(ws.receive(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
 
             if message.get("text") is not None:
                 msg = json.loads(message["text"])
@@ -186,10 +227,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await sim.set_running(bool(msg.get("running", True)))
                 elif cmd == "set_params":
                     await sim.set_params(msg.get("params", {}))
+                    await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "update_params":
                     dt = float(msg.get("dt", sim.cfg.dt))
                     substeps = int(msg.get("substeps", sim.substeps))
                     send_every = int(msg.get("send_every", sim.send_every))
+                    point_size = msg.get("point_size")
                     if dt <= 0:
                         dt = sim.cfg.dt
                     if substeps < 1:
@@ -201,10 +244,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         dt=dt,
                         substeps=substeps,
                         send_every=send_every,
+                        point_size=None if point_size is None else float(point_size),
                     )
                     await ws.send_text(json.dumps(params))
                 elif cmd == "reset":
                     await sim.reset()
+                    await ws.send_text(json.dumps(await sim.get_params_payload()))
             elif message.get("bytes") is not None:
                 continue
     except (WebSocketDisconnect, json.JSONDecodeError, TypeError, ValueError):
@@ -230,6 +275,6 @@ if __name__ == "__main__":
     cfg_dict = asdict(sim.cfg)
     cfg_dict["dt"] = args.dt
     sim.cfg = SimulationConfig(**cfg_dict)
-    sim.dt_phys = sim.cfg.dt / sim.substeps
+    sim._recompute_dt_phys()
 
     uvicorn.run("particle_life.realtime:app", host=args.host, port=args.port)

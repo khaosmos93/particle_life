@@ -9,13 +9,25 @@ const protocol = location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${protocol}://${location.host}/ws`);
 ws.binaryType = "arraybuffer";
 
-
 const dtSlider = document.getElementById("dtSlider");
 const substepsSlider = document.getElementById("substepsSlider");
 const sendEverySlider = document.getElementById("sendEverySlider");
+const pointSizeSlider = document.getElementById("pointSize");
+
 const dtValue = document.getElementById("dtValue");
 const substepsValue = document.getElementById("substepsValue");
 const sendEveryValue = document.getElementById("sendEveryValue");
+const pointSizeValue = document.getElementById("pointSizeValue");
+
+const fpsValue = document.getElementById("fpsValue");
+const realtimeValue = document.getElementById("realtimeValue");
+const physicsValue = document.getElementById("physicsValue");
+
+let wsStartTime = performance.now();
+let fpsWindowStart = performance.now();
+let fpsFrameCount = 0;
+let latestFps = 0;
+let physicsTime = 0;
 
 function sendControlUpdate() {
   if (ws.readyState !== WebSocket.OPEN) {
@@ -28,15 +40,30 @@ function sendControlUpdate() {
       dt: parseFloat(dtSlider.value),
       substeps: parseInt(substepsSlider.value, 10),
       send_every: parseInt(sendEverySlider.value, 10),
+      point_size: parseFloat(pointSizeSlider.value),
     }),
   );
 }
-
 
 function updateControlValues() {
   dtValue.textContent = Number(dtSlider.value).toFixed(2);
   substepsValue.textContent = substepsSlider.value;
   sendEveryValue.textContent = sendEverySlider.value;
+  pointSizeValue.textContent = Number(pointSizeSlider.value).toFixed(1);
+}
+
+function updateStatsLabels() {
+  const now = performance.now();
+  const realtimeT = (now - wsStartTime) / 1000;
+  realtimeValue.textContent = `${realtimeT.toFixed(1)}s`;
+  physicsValue.textContent = `${physicsTime.toFixed(1)}s`;
+  fpsValue.textContent = latestFps.toFixed(1);
+}
+
+function updatePointSize(newSize) {
+  pointSize = Number(newSize);
+  gl.useProgram(program);
+  gl.uniform1f(uPointSize, pointSize);
 }
 
 updateControlValues();
@@ -56,7 +83,18 @@ sendEverySlider.oninput = () => {
   sendControlUpdate();
 };
 
+
+pointSizeSlider.oninput = () => {
+  updateControlValues();
+  updatePointSize(pointSizeSlider.value);
+  sendControlUpdate();
+};
+
 ws.onopen = () => {
+  wsStartTime = performance.now();
+  fpsWindowStart = wsStartTime;
+  fpsFrameCount = 0;
+  latestFps = 0;
   sendControlUpdate();
 };
 
@@ -129,6 +167,8 @@ let pointSize = 3;
 let running = true;
 let currentPosDim = 3;
 
+updatePointSize(pointSizeSlider.value);
+
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.floor(canvas.clientWidth * dpr);
@@ -161,6 +201,7 @@ function render() {
     gl.drawArrays(gl.POINTS, 0, drawCount);
   }
 
+  updateStatsLabels();
   requestAnimationFrame(render);
 }
 requestAnimationFrame(render);
@@ -172,7 +213,16 @@ ws.onmessage = (event) => {
       dtSlider.value = String(msg.dt);
       substepsSlider.value = String(msg.substeps);
       sendEverySlider.value = String(msg.send_every);
+      if (typeof msg.point_size === "number") {
+        pointSizeSlider.value = String(msg.point_size);
+        updatePointSize(msg.point_size);
+      }
+      if (typeof msg.physics_t === "number") {
+        physicsTime = msg.physics_t;
+      }
       updateControlValues();
+    } else if (msg.type === "stats" && typeof msg.physics_t === "number") {
+      physicsTime = msg.physics_t;
     }
     return;
   }
@@ -196,6 +246,15 @@ ws.onmessage = (event) => {
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
   gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
   drawCount = N;
+
+  const now = performance.now();
+  fpsFrameCount += 1;
+  const elapsedMs = now - fpsWindowStart;
+  if (elapsedMs >= 1000) {
+    latestFps = (fpsFrameCount * 1000) / elapsedMs;
+    fpsFrameCount = 0;
+    fpsWindowStart = now;
+  }
 };
 
 document.getElementById("toggleBtn").addEventListener("click", () => {
@@ -206,8 +265,4 @@ document.getElementById("toggleBtn").addEventListener("click", () => {
 
 document.getElementById("resetBtn").addEventListener("click", () => {
   ws.send(JSON.stringify({ type: "reset" }));
-});
-
-document.getElementById("pointSize").addEventListener("input", (e) => {
-  pointSize = Number(e.target.value);
 });

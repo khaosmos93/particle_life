@@ -64,6 +64,24 @@
         text-align: right;
       }
 
+      #stats {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 10;
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 8px;
+        padding: 10px;
+        min-width: 170px;
+        font-size: 13px;
+      }
+
+      #stats div {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
       button,
       input {
         background: #1d2330;
@@ -86,7 +104,6 @@
     <div class="panel">
       <button id="toggleBtn">Pause</button>
       <button id="resetBtn">Reset</button>
-      <label>Point Size <input id="pointSize" type="range" min="1" max="50" step="0.5" value="20" /></label>
     </div>
     <div id="controls">
       <label>
@@ -104,6 +121,16 @@
         <input type="range" id="sendEverySlider" min="1" max="20" step="1" value="1" />
         <span id="sendEveryValue">1</span>
       </label>
+      <label>
+        point_size:
+        <input type="range" id="pointSize" min="1" max="10" step="0.5" value="3" />
+        <span id="pointSizeValue">3.0</span>
+      </label>
+    </div>
+    <div id="stats">
+      <div><span>FPS</span><span id="fpsValue">0</span></div>
+      <div><span>realtime t</span><span id="realtimeValue">0.0s</span></div>
+      <div><span>physics t</span><span id="physicsValue">0.0s</span></div>
     </div>
     <script src="/static/app.js"></script>
   </body>
