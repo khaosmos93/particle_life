@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import contextlib
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -33,11 +34,16 @@ class RealtimeSimulation:
         self.running = True
         self.substeps = 1
         self.send_every = 1
+        self.target_fps = 60
         self.point_size = 3.0
         self.physics_time = 0.0
         self.dt_phys = self.cfg.dt / self.substeps
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
+        self.latest_bytes: bytes | None = None
+        self.latest_physics_t = 0.0
+        self.latest_frame_id = 0
+        self.dirty = False
 
     def _init_realtime_particles(self):
         particles = init_particles(self.cfg)
@@ -57,6 +63,7 @@ class RealtimeSimulation:
             "dt": self.cfg.dt,
             "substeps": self.substeps,
             "send_every": self.send_every,
+            "target_fps": self.target_fps,
             "point_size": self.point_size,
             "physics_t": self.physics_time,
         }
@@ -70,6 +77,10 @@ class RealtimeSimulation:
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
             self.physics_time = 0.0
+            self.latest_physics_t = 0.0
+            self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
+            self.latest_frame_id += 1
+            self.dirty = True
 
     async def set_params(self, params: dict) -> None:
         async with self.lock:
@@ -82,16 +93,22 @@ class RealtimeSimulation:
                 cfg_dict["state_dim"] = max(3, int(cfg_dict["state_dim"]))
 
             self.cfg = SimulationConfig(**cfg_dict)
+            self.target_fps = max(1, int(params.get("target_fps", self.target_fps)))
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
             self.physics_time = 0.0
             self._recompute_dt_phys()
+            self.latest_physics_t = 0.0
+            self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
+            self.latest_frame_id += 1
+            self.dirty = True
 
     async def update_realtime_params(
         self,
         dt: float,
         substeps: int,
         send_every: int,
+        target_fps: int | None = None,
         point_size: float | None = None,
     ) -> dict:
         async with self.lock:
@@ -101,6 +118,8 @@ class RealtimeSimulation:
                 self.cfg = SimulationConfig(**cfg_dict)
             self.substeps = max(1, int(substeps))
             self.send_every = max(1, int(send_every))
+            if target_fps is not None:
+                self.target_fps = max(1, int(target_fps))
             if point_size is not None and point_size > 0:
                 self.point_size = float(point_size)
             self._recompute_dt_phys()
@@ -112,12 +131,16 @@ class RealtimeSimulation:
 
     async def get_stats_payload(self) -> dict:
         async with self.lock:
-            return {"type": "stats", "physics_t": self.physics_time}
+            return {
+                "type": "stats",
+                "physics_t": self.latest_physics_t,
+                "target_fps": self.target_fps,
+            }
 
-    async def tick(self, frame_interval_idx: int) -> bytes | None:
+    async def physics_tick(self, frame_interval_idx: int) -> None:
         async with self.lock:
             if not self.running:
-                return None
+                return
 
             cfg_dict = asdict(self.cfg)
             cfg_dict["dt"] = self.dt_phys
@@ -126,11 +149,39 @@ class RealtimeSimulation:
             for _ in range(self.substeps):
                 step(self.particles, step_cfg, self.rng)
             self.physics_time += self._sim_time_per_interval()
+            self.latest_physics_t = self.physics_time
 
             if frame_interval_idx % self.send_every == 0:
-                return pack_frame(self.particles, self.cfg.box_size)
+                self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
+                self.latest_frame_id += 1
+                self.dirty = True
 
-            return None
+    async def sender_loop(self, ws: WebSocket) -> None:
+        last_sent_frame_id = -1
+        last_stats_sent = time.monotonic()
+        next_deadline = time.monotonic()
+        while True:
+            async with self.lock:
+                target_fps = max(1, int(self.target_fps))
+
+            next_deadline += 1.0 / target_fps
+            sleep_s = max(0.0, next_deadline - time.monotonic())
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
+
+            frame = None
+            async with self.lock:
+                if self.dirty and self.latest_bytes is not None and self.latest_frame_id != last_sent_frame_id:
+                    frame = self.latest_bytes
+                    last_sent_frame_id = self.latest_frame_id
+
+            if frame is not None:
+                await ws.send_bytes(frame)
+
+            now = time.monotonic()
+            if now - last_stats_sent >= 1.0:
+                await ws.send_text(json.dumps(await self.get_stats_payload()))
+                last_stats_sent = now
 
 
 sim = RealtimeSimulation()
@@ -138,7 +189,7 @@ sim = RealtimeSimulation()
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.sim_task = asyncio.create_task(simulation_loop())
+    app.state.sim_task = asyncio.create_task(physics_loop())
     try:
         yield
     finally:
@@ -180,44 +231,24 @@ def pack_frame(particles, box_size):
     return header_i.tobytes() + header_f.tobytes() + body.tobytes()
 
 
-async def simulation_loop() -> None:
+async def physics_loop() -> None:
     frame_interval_idx = 0
     while True:
-        frame = await sim.tick(frame_interval_idx)
-
+        await sim.physics_tick(frame_interval_idx)
         frame_interval_idx += 1
-
-        if frame is not None and sim.clients:
-            stale = []
-            for ws in sim.clients:
-                try:
-                    await ws.send_bytes(frame)
-                except Exception:
-                    stale.append(ws)
-            for ws in stale:
-                sim.clients.discard(ws)
-
-        await asyncio.sleep(1 / 60)
+        await asyncio.sleep(0)
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     sim.clients.add(ws)
-    last_stats_sent = asyncio.get_running_loop().time()
+    sender_task = asyncio.create_task(sim.sender_loop(ws))
     try:
         await ws.send_text(json.dumps(await sim.get_params_payload()))
 
         while True:
-            now = asyncio.get_running_loop().time()
-            if now - last_stats_sent >= 1.0:
-                await ws.send_text(json.dumps(await sim.get_stats_payload()))
-                last_stats_sent = now
-
-            try:
-                message = await asyncio.wait_for(ws.receive(), timeout=0.1)
-            except asyncio.TimeoutError:
-                continue
+            message = await ws.receive()
 
             if message.get("text") is not None:
                 msg = json.loads(message["text"])
@@ -232,6 +263,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     dt = float(msg.get("dt", sim.cfg.dt))
                     substeps = int(msg.get("substeps", sim.substeps))
                     send_every = int(msg.get("send_every", sim.send_every))
+                    target_fps = int(msg.get("target_fps", sim.target_fps))
                     point_size = msg.get("point_size")
                     if dt <= 0:
                         dt = sim.cfg.dt
@@ -239,11 +271,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         substeps = sim.substeps
                     if send_every < 1:
                         send_every = sim.send_every
+                    if target_fps < 1:
+                        target_fps = sim.target_fps
 
                     params = await sim.update_realtime_params(
                         dt=dt,
                         substeps=substeps,
                         send_every=send_every,
+                        target_fps=target_fps,
                         point_size=None if point_size is None else float(point_size),
                     )
                     await ws.send_text(json.dumps(params))
@@ -255,6 +290,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     except (WebSocketDisconnect, json.JSONDecodeError, TypeError, ValueError):
         pass
     finally:
+        sender_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sender_task
         sim.clients.discard(ws)
 
 
