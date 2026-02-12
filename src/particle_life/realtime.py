@@ -68,14 +68,21 @@ class RealtimeSimulation:
             self.particles = self._init_realtime_particles()
             self.dt_phys = self.cfg.dt / self.substeps
 
-    async def update_realtime_params(self, dt: float, substeps: int, send_every: int) -> None:
+    async def update_realtime_params(self, dt: float, substeps: int, send_every: int) -> dict:
         async with self.lock:
-            cfg_dict = asdict(self.cfg)
-            cfg_dict["dt"] = float(dt)
-            self.cfg = SimulationConfig(**cfg_dict)
+            if dt > 0:
+                cfg_dict = asdict(self.cfg)
+                cfg_dict["dt"] = float(dt)
+                self.cfg = SimulationConfig(**cfg_dict)
             self.substeps = max(1, int(substeps))
             self.send_every = max(1, int(send_every))
             self.dt_phys = self.cfg.dt / self.substeps
+            return {
+                "type": "params",
+                "dt": self.cfg.dt,
+                "substeps": self.substeps,
+                "send_every": self.send_every,
+            }
 
     async def tick(self, frame_interval_idx: int) -> bytes | None:
         async with self.lock:
@@ -178,11 +185,22 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 elif cmd == "set_params":
                     await sim.set_params(msg.get("params", {}))
                 elif cmd == "update_params":
-                    await sim.update_realtime_params(
-                        dt=msg.get("dt", sim.cfg.dt),
-                        substeps=msg.get("substeps", sim.substeps),
-                        send_every=msg.get("send_every", sim.send_every),
+                    dt = float(msg.get("dt", sim.cfg.dt))
+                    substeps = int(msg.get("substeps", sim.substeps))
+                    send_every = int(msg.get("send_every", sim.send_every))
+                    if dt <= 0:
+                        dt = sim.cfg.dt
+                    if substeps < 1:
+                        substeps = sim.substeps
+                    if send_every < 1:
+                        send_every = sim.send_every
+
+                    params = await sim.update_realtime_params(
+                        dt=dt,
+                        substeps=substeps,
+                        send_every=send_every,
                     )
+                    await ws.send_text(json.dumps(params))
                 elif cmd == "reset":
                     await sim.reset()
             elif message.get("bytes") is not None:

@@ -32,6 +32,18 @@ function sendControlUpdate() {
   );
 }
 
+let controlUpdateTimer = null;
+
+function scheduleControlUpdate() {
+  if (controlUpdateTimer !== null) {
+    clearTimeout(controlUpdateTimer);
+  }
+  controlUpdateTimer = setTimeout(() => {
+    controlUpdateTimer = null;
+    sendControlUpdate();
+  }, 50);
+}
+
 function updateControlValues() {
   dtValue.textContent = Number(dtSlider.value).toFixed(2);
   substepsValue.textContent = substepsSlider.value;
@@ -42,16 +54,20 @@ updateControlValues();
 
 dtSlider.oninput = () => {
   updateControlValues();
-  sendControlUpdate();
+  scheduleControlUpdate();
 };
 
 substepsSlider.oninput = () => {
   updateControlValues();
-  sendControlUpdate();
+  scheduleControlUpdate();
 };
 
 sendEverySlider.oninput = () => {
   updateControlValues();
+  scheduleControlUpdate();
+};
+
+ws.onopen = () => {
   sendControlUpdate();
 };
 
@@ -161,6 +177,17 @@ function render() {
 requestAnimationFrame(render);
 
 ws.onmessage = (event) => {
+  if (typeof event.data === "string") {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "params") {
+      dtSlider.value = String(msg.dt);
+      substepsSlider.value = String(msg.substeps);
+      sendEverySlider.value = String(msg.send_every);
+      updateControlValues();
+    }
+    return;
+  }
+
   const frameBuffer = event.data;
   const dv = new DataView(frameBuffer);
 
