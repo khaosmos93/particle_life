@@ -21,19 +21,27 @@ class RealtimeSimulation:
         self.cfg = SimulationConfig(
             n_particles=400,
             state_dim=3,
-            dt=0.01,
+            dt=1.0,
             steps=0,
             seed=0,
             box_size=1.0,
             out_path=None,
         )
         self.rng = np.random.default_rng(self.cfg.seed)
-        self.particles = init_particles(self.cfg)
+        self.realtime_speed = 0.12
+        self.particles = self._init_realtime_particles()
         self.running = True
         self.substeps = 10
         self.send_every = 1
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
+
+
+    def _init_realtime_particles(self):
+        particles = init_particles(self.cfg)
+        for p in particles:
+            p.vel = p.vel + self.realtime_speed * self.rng.normal(size=2)
+        return particles
 
     async def set_running(self, value: bool) -> None:
         async with self.lock:
@@ -42,7 +50,7 @@ class RealtimeSimulation:
     async def reset(self) -> None:
         async with self.lock:
             self.rng = np.random.default_rng(self.cfg.seed)
-            self.particles = init_particles(self.cfg)
+            self.particles = self._init_realtime_particles()
 
     async def set_params(self, params: dict) -> None:
         async with self.lock:
@@ -56,7 +64,7 @@ class RealtimeSimulation:
 
             self.cfg = SimulationConfig(**cfg_dict)
             self.rng = np.random.default_rng(self.cfg.seed)
-            self.particles = init_particles(self.cfg)
+            self.particles = self._init_realtime_particles()
 
     async def tick(self, frame_interval_idx: int) -> bytes | None:
         async with self.lock:

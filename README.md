@@ -78,6 +78,7 @@ Notes:
 - `--dt` is the timestep for one frame interval.
 - Physics uses substeps, so effective physics timestep is `dt / substeps`.
 - Binary frames are sent every `--send-every` frame intervals.
+- Realtime mode adds a small random initial velocity kick so motion is visible immediately after startup/reset.
 - Simulation frames are streamed as binary `Float32` data over WebSocket.
 - The frame protocol is dimension-agnostic for position and state vectors.
 - Existing batch simulation workflow remains unchanged (`particle_life.sim`).
