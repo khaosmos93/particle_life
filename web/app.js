@@ -32,17 +32,6 @@ function sendControlUpdate() {
   );
 }
 
-let controlUpdateTimer = null;
-
-function scheduleControlUpdate() {
-  if (controlUpdateTimer !== null) {
-    clearTimeout(controlUpdateTimer);
-  }
-  controlUpdateTimer = setTimeout(() => {
-    controlUpdateTimer = null;
-    sendControlUpdate();
-  }, 50);
-}
 
 function updateControlValues() {
   dtValue.textContent = Number(dtSlider.value).toFixed(2);
@@ -54,17 +43,17 @@ updateControlValues();
 
 dtSlider.oninput = () => {
   updateControlValues();
-  scheduleControlUpdate();
+  sendControlUpdate();
 };
 
 substepsSlider.oninput = () => {
   updateControlValues();
-  scheduleControlUpdate();
+  sendControlUpdate();
 };
 
 sendEverySlider.oninput = () => {
   updateControlValues();
-  scheduleControlUpdate();
+  sendControlUpdate();
 };
 
 ws.onopen = () => {

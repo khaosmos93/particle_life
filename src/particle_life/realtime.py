@@ -103,7 +103,22 @@ class RealtimeSimulation:
 
 
 sim = RealtimeSimulation()
-app = FastAPI()
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.sim_task = asyncio.create_task(simulation_loop())
+    try:
+        yield
+    finally:
+        task = getattr(app.state, "sim_task", None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
@@ -153,19 +168,6 @@ async def simulation_loop() -> None:
 
         await asyncio.sleep(1 / 60)
 
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    app.state.sim_task = asyncio.create_task(simulation_loop())
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    task = getattr(app.state, "sim_task", None)
-    if task is not None:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
 
 @app.websocket("/ws")
