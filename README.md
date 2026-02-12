@@ -23,38 +23,6 @@ Chunked output (50 steps per Parquet file):
 python -m particle_life.sim --out data/raw/run_ds --steps 200 --chunk 50
 ```
 
-## Output format (Parquet dataset)
-
-Long-format table with one row per particle per step.
-
-```python
-import pandas as pd
-
-df = pd.read_parquet("data/raw/run_ds")  # reads all chunk partitions
-print(df.head())
-print(df["pos"].iloc[0])
-
-df.groupby("step").size()
-```
-
-Read only a single chunk partition:
-
-```python
-df = pd.read_parquet("data/raw/run_ds/chunk_id=0")
-```
-
-## Animation
-
-Render a simple animation directly from a Parquet dataset directory (including Hive-style partitions such as `chunk_id=0/part.parquet`):
-
-```bash
-python -m particle_life.analysis --in data/raw/run_ds --out data/figures/run.gif --fps 30 --stride 2
-```
-
-Notes:
-- GIF output is the easiest/most portable default.
-- MP4 output is supported (`--out ...mp4`) but may require ffmpeg to be available.
-
 ## Realtime WebGL (Binary Streaming)
 
 Run locally:
@@ -63,67 +31,119 @@ Run locally:
 python -m particle_life.realtime
 ```
 
-Open:
+Open `http://localhost:8000`.
+
+Binary frame protocol is unchanged:
+- Header: `int32[posDim, stateDim, N]` + `float32[box_size]`
+- Body: `float32` rows of `[pos..., state...]`
+
+Control messages stay JSON text over WebSocket.
+
+## Initial-condition presets
+
+Preset files live in:
 
 ```text
-http://localhost:8000
+data/initial_conditions/
 ```
 
-In GitHub Codespaces:
-- Port 8000 auto-forwards.
-- Use the forwarded browser link.
-- WebSocket automatically uses `wss` when the page is loaded over HTTPS.
+The realtime server exposes:
+- `GET /api/presets`: list available preset metadata.
+- WebSocket `{ "type": "load_preset", "preset": "<file>.json" }`: load and reset to that preset.
 
-Notes:
-- `--dt` is the base timestep for one frame interval.
-- Physics uses substeps, so effective physics timestep is `dt / substeps`.
-- Binary frames are sent every `--send-every` frame intervals (network decimation only).
-- Realtime mode adds a small random initial velocity kick so motion is visible immediately after startup/reset.
-- Simulation frames are streamed as binary `Float32` data over WebSocket.
-- The frame protocol is dimension-agnostic for position and state vectors.
-- Existing batch simulation workflow remains unchanged (`particle_life.sim`).
+### Preset JSON schema
 
-Examples:
-
-```bash
-python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 1
+```json
+{
+  "meta": {
+    "name": "string",
+    "description": "string"
+  },
+  "world": {
+    "dim": 2,
+    "box_size": 1.0
+  },
+  "model": {
+    "state_dim": 3,
+    "canonical_states": [
+      [1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0]
+    ],
+    "interaction": {
+      "r_repulse": 0.02,
+      "r_cut": 0.25,
+      "strength": 1.0,
+      "noise": 0.0,
+      "damping": 0.0
+    },
+    "coupling": {
+      "fn": "two_state_asymmetric",
+      "params": {
+        "same": 1.0,
+        "s0_to_s1": 1.0,
+        "s1_to_s0": -1.0
+      }
+    }
+  },
+  "sim": {
+    "dt": 0.01,
+    "speed": 1.0,
+    "seed": 0
+  },
+  "particles": [
+    {
+      "id": 0,
+      "m": 1.0,
+      "pos": [0.1, 0.2],
+      "vel": [0.0, 0.0],
+      "state": [1.0, 0.0, 0.0]
+    }
+  ]
+}
 ```
 
-```bash
-python -m particle_life.realtime --dt 1.0 --substeps 20 --send-every 3
-```
+Rules implemented by realtime backend:
+- No A/B labels are used anywhere.
+- Exactly two canonical state vectors are required in presets.
+- Every `particles[i].state` must exactly match either `canonical_states[0]` or `canonical_states[1]`.
+- Coupling is selected by function name via `model.coupling.fn`.
 
+### Coupling function
+
+`"fn": "two_state_asymmetric"` is the built-in coupling rule used by presets:
+- same-state pairs use `params.same`
+- canonical state index `0 -> 1` uses `params.s0_to_s1`
+- canonical state index `1 -> 0` uses `params.s1_to_s0`
+
+This produces the required asymmetric interaction behavior without labels.
 
 ## Realtime controls
 
-- Sliders in the WebGL UI allow dynamic tuning of `dt`, `substeps`, and `send_every`.
-- Changes apply immediately to the running simulation stream.
-- No server restart is required.
+The Web UI now supports:
+- Dynamic `dt`, `speed`, `send_every`, and `point_size` updates.
+- Seed control:
+  - numeric seed input,
+  - **Randomize Seed** button,
+  - **Apply Seed** button (sends `{ "type": "set_seed", "seed": <int> }`).
+- Preset selection:
+  - preset dropdown populated from `/api/presets`,
+  - **Load Preset** button.
+- Color scheme selection (`direct_clamp`, `normalize`, `abs`, `softmax`, `hsv_like`) for state-to-RGB mapping on the frontend.
 
-## Environment setup (.venv)
+Color mapping is render-side only; backend continues to stream raw states in binary frames.
 
-This project standardizes on a project-local virtual environment at `.venv/`.
+## Included structured presets
 
-Use the exact setup sequence below (POSIX shell):
+Ten structured presets are provided:
+1. `two_clusters.json`
+2. `checkerboard.json`
+3. `concentric_rings.json`
+4. `stripe_bands.json`
+5. `spiral_arms.json`
+6. `yin_yang.json`
+7. `four_quadrants.json`
+8. `line_vs_cloud.json`
+9. `two_lanes.json`
+10. `radial_burst.json`
 
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -U 'pip<25.3'
-pip install pip-tools
-pip-compile requirements.in
-pip install -r requirements.txt
-pip install -e .
-```
-
-### GitHub Codespaces
-
-The devcontainer is configured for Python 3.12.1 and runs the same setup sequence automatically when the Codespace is created, including regenerating `requirements.txt` from `requirements.in` and installing editable project sources.
-
-## Realtime stats and visuals
-
-- The UI stats panel shows:
-  - `FPS`: recent binary frame receive/render rate.
-  - `realtime t`: wall-clock seconds since WebSocket open.
-  - `physics t`: simulated time accumulated on the backend.
-- `point_size` slider updates the existing WebGL `u_pointSize` uniform live and is synchronized with backend params acks.
+All presets are 2D, use `box_size=1.0`, `state_dim=3`, and the two canonical state vectors.

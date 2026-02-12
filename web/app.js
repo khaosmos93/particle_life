@@ -13,6 +13,9 @@ const dtSlider = document.getElementById("dtSlider");
 const speedSlider = document.getElementById("speedSlider");
 const sendEverySlider = document.getElementById("sendEverySlider");
 const pointSizeSlider = document.getElementById("pointSize");
+const seedInput = document.getElementById("seedInput");
+const presetSelect = document.getElementById("presetSelect");
+const colorSchemeSelect = document.getElementById("colorSchemeSelect");
 
 const dtValue = document.getElementById("dtValue");
 const speedValue = document.getElementById("speedValue");
@@ -28,6 +31,59 @@ let fpsWindowStart = performance.now();
 let fpsFrameCount = 0;
 let latestFps = 0;
 let physicsTime = 0;
+let currentColorScheme = colorSchemeSelect.value;
+
+function clamp01(x) {
+  return Math.min(1, Math.max(0, x));
+}
+
+function stateToRgb(state, scheme) {
+  const x = state[0] ?? 0;
+  const y = state[1] ?? 0;
+  const z = state[2] ?? 0;
+
+  if (scheme === "normalize") {
+    const norm = Math.sqrt(x * x + y * y + z * z) || 1;
+    return [clamp01(0.5 + 0.5 * x / norm), clamp01(0.5 + 0.5 * y / norm), clamp01(0.5 + 0.5 * z / norm)];
+  }
+
+  if (scheme === "abs") {
+    const sum = Math.abs(x) + Math.abs(y) + Math.abs(z) || 1;
+    return [Math.abs(x) / sum, Math.abs(y) / sum, Math.abs(z) / sum];
+  }
+
+  if (scheme === "softmax") {
+    const ex = Math.exp(Math.max(-10, Math.min(10, x)));
+    const ey = Math.exp(Math.max(-10, Math.min(10, y)));
+    const ez = Math.exp(Math.max(-10, Math.min(10, z)));
+    const denom = ex + ey + ez || 1;
+    return [ex / denom, ey / denom, ez / denom];
+  }
+
+  if (scheme === "hsv_like") {
+    const norm = Math.sqrt(x * x + y * y + z * z) || 1;
+    const nx = 0.5 + 0.5 * x / norm;
+    const ny = 0.5 + 0.5 * y / norm;
+    const nz = 0.5 + 0.5 * z / norm;
+    const hue = (Math.atan2(ny - 0.5, nx - 0.5) / (2 * Math.PI) + 1) % 1;
+    const sat = clamp01(Math.hypot(nx - 0.5, ny - 0.5) * 2);
+    const val = clamp01(nz);
+    const i = Math.floor(hue * 6);
+    const f = hue * 6 - i;
+    const p = val * (1 - sat);
+    const q = val * (1 - f * sat);
+    const t = val * (1 - (1 - f) * sat);
+    const mod = i % 6;
+    if (mod === 0) return [val, t, p];
+    if (mod === 1) return [q, val, p];
+    if (mod === 2) return [p, val, t];
+    if (mod === 3) return [p, q, val];
+    if (mod === 4) return [t, p, val];
+    return [val, p, q];
+  }
+
+  return [clamp01(x), clamp01(y), clamp01(z)];
+}
 
 function sendControlUpdate() {
   if (ws.readyState !== WebSocket.OPEN) {
@@ -41,6 +97,7 @@ function sendControlUpdate() {
       speed: parseFloat(speedSlider.value),
       send_every: parseInt(sendEverySlider.value, 10),
       point_size: parseFloat(pointSizeSlider.value),
+      color_scheme: currentColorScheme,
     }),
   );
 }
@@ -66,7 +123,25 @@ function updatePointSize(newSize) {
   gl.uniform1f(uPointSize, pointSize);
 }
 
+async function loadPresets() {
+  try {
+    const res = await fetch("/api/presets");
+    const presets = await res.json();
+    presetSelect.innerHTML = "";
+    for (const preset of presets) {
+      const opt = document.createElement("option");
+      opt.value = preset.file;
+      opt.textContent = `${preset.name} (${preset.file})`;
+      opt.title = preset.description || "";
+      presetSelect.appendChild(opt);
+    }
+  } catch (_err) {
+    presetSelect.innerHTML = "";
+  }
+}
+
 updateControlValues();
+loadPresets();
 
 dtSlider.oninput = () => {
   updateControlValues();
@@ -83,12 +158,35 @@ sendEverySlider.oninput = () => {
   sendControlUpdate();
 };
 
-
 pointSizeSlider.oninput = () => {
   updateControlValues();
   updatePointSize(pointSizeSlider.value);
   sendControlUpdate();
 };
+
+colorSchemeSelect.onchange = () => {
+  currentColorScheme = colorSchemeSelect.value;
+  sendControlUpdate();
+};
+
+document.getElementById("randomizeSeedBtn").addEventListener("click", () => {
+  seedInput.value = String(Math.floor(Math.random() * 1e9));
+});
+
+document.getElementById("applySeedBtn").addEventListener("click", () => {
+  const seed = parseInt(seedInput.value, 10);
+  if (!Number.isFinite(seed)) {
+    return;
+  }
+  ws.send(JSON.stringify({ type: "set_seed", seed }));
+});
+
+document.getElementById("loadPresetBtn").addEventListener("click", () => {
+  if (!presetSelect.value) {
+    return;
+  }
+  ws.send(JSON.stringify({ type: "load_preset", preset: presetSelect.value }));
+});
 
 ws.onopen = () => {
   wsStartTime = performance.now();
@@ -115,7 +213,7 @@ void main() {
     gl_Position = vec4(clip, 0.0, 1.0);
     gl_PointSize = u_pointSize;
 
-    v_rgb = clamp(a_rgb * 0.5 + 0.5, 0.0, 1.0);
+    v_rgb = clamp(a_rgb, 0.0, 1.0);
 }
 `;
 
@@ -165,7 +263,6 @@ let stride = 0;
 let boxSize = 1;
 let pointSize = 3;
 let running = true;
-let currentPosDim = 3;
 
 updatePointSize(pointSizeSlider.value);
 
@@ -191,7 +288,7 @@ function render() {
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, strideBytes, 0);
 
-    const colorOffsetBytes = currentPosDim * 4;
+    const colorOffsetBytes = 3 * 4;
     gl.enableVertexAttribArray(aRgb);
     gl.vertexAttribPointer(aRgb, 3, gl.FLOAT, false, strideBytes, colorOffsetBytes);
 
@@ -220,9 +317,18 @@ ws.onmessage = (event) => {
       if (typeof msg.physics_t === "number") {
         physicsTime = msg.physics_t;
       }
+      if (typeof msg.seed === "number") {
+        seedInput.value = String(msg.seed);
+      }
+      if (typeof msg.color_scheme === "string") {
+        currentColorScheme = msg.color_scheme;
+        colorSchemeSelect.value = msg.color_scheme;
+      }
       updateControlValues();
     } else if (msg.type === "stats" && typeof msg.physics_t === "number") {
       physicsTime = msg.physics_t;
+    } else if (msg.type === "seed" && typeof msg.seed === "number") {
+      seedInput.value = String(msg.seed);
     }
     return;
   }
@@ -236,15 +342,33 @@ ws.onmessage = (event) => {
   boxSize = dv.getFloat32(12, true);
 
   const arr = new Float32Array(frameBuffer, 16);
-  stride = posDim + stateDim;
-  currentPosDim = posDim;
+  const inputStride = posDim + stateDim;
+  stride = 6;
 
-  if (stateDim < 3 || posDim < 3 || arr.length < N * stride) {
+  if (stateDim < 3 || posDim < 3 || arr.length < N * inputStride) {
     return;
   }
 
+  const interleaved = new Float32Array(N * stride);
+  for (let i = 0; i < N; i += 1) {
+    const srcBase = i * inputStride;
+    const dstBase = i * stride;
+
+    interleaved[dstBase + 0] = arr[srcBase + 0];
+    interleaved[dstBase + 1] = arr[srcBase + 1];
+    interleaved[dstBase + 2] = arr[srcBase + 2];
+
+    const rgb = stateToRgb(
+      [arr[srcBase + posDim + 0], arr[srcBase + posDim + 1], arr[srcBase + posDim + 2]],
+      currentColorScheme,
+    );
+    interleaved[dstBase + 3] = rgb[0];
+    interleaved[dstBase + 4] = rgb[1];
+    interleaved[dstBase + 5] = rgb[2];
+  }
+
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_DRAW);
   drawCount = N;
 
   const now = performance.now();
