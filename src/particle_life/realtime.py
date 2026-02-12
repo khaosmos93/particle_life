@@ -18,6 +18,9 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 WEB_DIR = BASE_DIR / "web"
 PRESETS_DIR = BASE_DIR / "data" / "initial_conditions"
 
+# Problem: loading a preset can make runtime FPS collapse due to work done on the async path
+# (lock contention, frame packing cost, and websocket send backpressure) after apply.
+
 
 def coupling_two_state_asymmetric(
     state_i: np.ndarray,
@@ -70,6 +73,23 @@ def pack_frame(particles, box_size):
     return header_i.tobytes() + header_f.tobytes() + body.tobytes()
 
 
+def pack_frame_arrays(pos: np.ndarray, state: np.ndarray, box_size: float) -> bytes:
+    if pos.shape[1] == 2:
+        pos = np.pad(pos, ((0, 0), (0, 1)))
+
+    if state.shape[1] < 3:
+        state = np.pad(state, ((0, 0), (0, 3 - state.shape[1])))
+
+    pos_dim = pos.shape[1]
+    state_dim = state.shape[1]
+    n_particles = pos.shape[0]
+
+    header_i = np.array([pos_dim, state_dim, n_particles], dtype=np.int32)
+    header_f = np.array([box_size], dtype=np.float32)
+    body = np.concatenate([pos, state], axis=1).astype(np.float32)
+    return header_i.tobytes() + header_f.tobytes() + body.tobytes()
+
+
 class RealtimeSimulation:
     def __init__(self) -> None:
         self.cfg = SimulationConfig(
@@ -95,6 +115,14 @@ class RealtimeSimulation:
         self.latest_physics_t = 0.0
         self.latest_frame_id = 0
         self.dirty = False
+        self.perf_acc = {
+            "lock_wait_ms": 0.0,
+            "lock_wait_n": 0,
+            "pack_ms": 0.0,
+            "pack_n": 0,
+            "send_ms": 0.0,
+            "send_n": 0,
+        }
 
         self.interaction = {
             "r_repulse": self.cfg.r_min,
@@ -109,6 +137,17 @@ class RealtimeSimulation:
         self.rng = np.random.default_rng(self.cfg.seed)
         self.particles = self._init_realtime_particles()
         self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
+
+    @contextlib.asynccontextmanager
+    async def locked(self):
+        t0 = time.monotonic()
+        await self.lock.acquire()
+        self.perf_acc["lock_wait_ms"] += (time.monotonic() - t0) * 1000.0
+        self.perf_acc["lock_wait_n"] += 1
+        try:
+            yield
+        finally:
+            self.lock.release()
 
     def _init_realtime_particles(self):
         particles = init_particles(self.cfg)
@@ -130,22 +169,21 @@ class RealtimeSimulation:
     def _reset_buffers(self) -> None:
         self.physics_time = 0.0
         self.latest_physics_t = 0.0
-        self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
-        self.latest_frame_id += 1
-        self.dirty = True
+        self.latest_bytes = None
+        self.dirty = False
 
     async def set_running(self, value: bool) -> None:
-        async with self.lock:
+        async with self.locked():
             self.running = bool(value)
 
     async def reset(self) -> None:
-        async with self.lock:
+        async with self.locked():
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
             self._reset_buffers()
 
     async def set_seed(self, seed: int) -> dict:
-        async with self.lock:
+        async with self.locked():
             cfg_dict = asdict(self.cfg)
             cfg_dict["seed"] = int(seed)
             self.cfg = SimulationConfig(**cfg_dict)
@@ -237,12 +275,12 @@ class RealtimeSimulation:
         if not path_resolved.is_file() or presets_root not in path_resolved.parents:
             raise ValueError("Preset file not found")
 
-        async with self.lock:
+        async with self.locked():
             base_cfg = asdict(self.cfg)
 
         parsed = await asyncio.to_thread(self._load_and_parse_preset_sync, path_resolved, preset_name, base_cfg)
 
-        async with self.lock:
+        async with self.locked():
             self.cfg = parsed["cfg"]
             self.speed = parsed["speed"]
             self.particles = parsed["particles"]
@@ -263,7 +301,7 @@ class RealtimeSimulation:
             }
 
     async def set_params(self, params: dict) -> None:
-        async with self.lock:
+        async with self.locked():
             cfg_dict = asdict(self.cfg)
             for key, value in params.items():
                 if key in cfg_dict and key not in {"steps", "chunk", "out_path"}:
@@ -297,7 +335,7 @@ class RealtimeSimulation:
         point_size: float | None = None,
         color_scheme: str | None = None,
     ) -> dict:
-        async with self.lock:
+        async with self.locked():
             if dt > 0:
                 cfg_dict = asdict(self.cfg)
                 cfg_dict["dt"] = float(dt)
@@ -313,15 +351,32 @@ class RealtimeSimulation:
             return self._params_payload()
 
     async def get_params_payload(self) -> dict:
-        async with self.lock:
+        async with self.locked():
             return self._params_payload()
 
     async def get_stats_payload(self) -> dict:
-        async with self.lock:
-            return {
-                "type": "stats",
+        async with self.locked():
+            lock_n = max(1, int(self.perf_acc["lock_wait_n"]))
+            pack_n = max(1, int(self.perf_acc["pack_n"]))
+            send_n = max(1, int(self.perf_acc["send_n"]))
+            payload = {
+                "type": "perf",
                 "physics_t": self.latest_physics_t,
                 "target_fps": self.target_fps,
+                "particles": len(self.particles),
+                "payload_bytes": 0 if self.latest_bytes is None else len(self.latest_bytes),
+                "lock_wait_ms": self.perf_acc["lock_wait_ms"] / lock_n,
+                "pack_ms": self.perf_acc["pack_ms"] / pack_n,
+                "send_ms": self.perf_acc["send_ms"] / send_n,
+            }
+            self.perf_acc["lock_wait_ms"] = 0.0
+            self.perf_acc["lock_wait_n"] = 0
+            self.perf_acc["pack_ms"] = 0.0
+            self.perf_acc["pack_n"] = 0
+            self.perf_acc["send_ms"] = 0.0
+            self.perf_acc["send_n"] = 0
+            return {
+                **payload,
             }
 
     def _coupling_value(self, si: np.ndarray, sj: np.ndarray) -> float:
@@ -364,7 +419,11 @@ class RealtimeSimulation:
         return forces
 
     async def physics_tick(self, frame_interval_idx: int) -> None:
-        async with self.lock:
+        need_pack = False
+        pos_snapshot = None
+        state_snapshot = None
+        box_size = 0.0
+        async with self.locked():
             if not self.running:
                 return
 
@@ -380,16 +439,28 @@ class RealtimeSimulation:
             self.latest_physics_t = self.physics_time
 
             if frame_interval_idx % self.send_every == 0:
-                self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
+                pos_snapshot = np.asarray([p.pos.copy() for p in self.particles], dtype=np.float64)
+                state_snapshot = np.asarray([p.state.copy() for p in self.particles], dtype=np.float64)
+                box_size = self.cfg.box_size
+                need_pack = True
+
+        if need_pack and pos_snapshot is not None and state_snapshot is not None:
+            t0 = time.monotonic()
+            frame_bytes = await asyncio.to_thread(pack_frame_arrays, pos_snapshot, state_snapshot, box_size)
+            pack_ms = (time.monotonic() - t0) * 1000.0
+            async with self.locked():
+                self.latest_bytes = frame_bytes
                 self.latest_frame_id += 1
                 self.dirty = True
+                self.perf_acc["pack_ms"] += pack_ms
+                self.perf_acc["pack_n"] += 1
 
     async def sender_loop(self, ws: WebSocket) -> None:
         last_sent_frame_id = -1
         last_stats_sent = time.monotonic()
         next_deadline = time.monotonic()
         while True:
-            async with self.lock:
+            async with self.locked():
                 target_fps = max(1, int(self.target_fps))
 
             next_deadline += 1.0 / target_fps
@@ -398,13 +469,18 @@ class RealtimeSimulation:
                 await asyncio.sleep(sleep_s)
 
             frame = None
-            async with self.lock:
+            async with self.locked():
                 if self.dirty and self.latest_bytes is not None and self.latest_frame_id != last_sent_frame_id:
                     frame = self.latest_bytes
                     last_sent_frame_id = self.latest_frame_id
 
             if frame is not None:
+                t0 = time.monotonic()
                 await ws.send_bytes(frame)
+                send_ms = (time.monotonic() - t0) * 1000.0
+                async with self.locked():
+                    self.perf_acc["send_ms"] += send_ms
+                    self.perf_acc["send_n"] += 1
 
             now = time.monotonic()
             if now - last_stats_sent >= 1.0:
@@ -475,7 +551,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         await ws.send_text(json.dumps(await sim.get_params_payload()))
 
         while True:
-            message = await ws.receive()
+            try:
+                message = await ws.receive()
+            except WebSocketDisconnect:
+                print("[ws] client disconnected")
+                break
             if message.get("type") == "websocket.disconnect":
                 print("[ws] client disconnected")
                 break
