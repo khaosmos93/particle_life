@@ -32,12 +32,11 @@ class RealtimeSimulation:
         self.realtime_speed = 0.12
         self.particles = self._init_realtime_particles()
         self.running = True
-        self.substeps = 1
         self.send_every = 1
         self.target_fps = 60
         self.point_size = 3.0
         self.physics_time = 0.0
-        self.dt_phys = self.cfg.dt / self.substeps
+        self.speed = 1.0
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
         self.latest_bytes: bytes | None = None
@@ -51,17 +50,11 @@ class RealtimeSimulation:
         #     p.vel = p.vel + self.realtime_speed * self.rng.normal(size=2)
         return particles
 
-    def _recompute_dt_phys(self) -> None:
-        self.dt_phys = self.cfg.dt / self.substeps
-
-    def _sim_time_per_interval(self) -> float:
-        return self.cfg.dt
-
     def _params_payload(self) -> dict:
         return {
             "type": "params",
             "dt": self.cfg.dt,
-            "substeps": self.substeps,
+            "speed": self.speed,
             "send_every": self.send_every,
             "target_fps": self.target_fps,
             "point_size": self.point_size,
@@ -97,7 +90,6 @@ class RealtimeSimulation:
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
             self.physics_time = 0.0
-            self._recompute_dt_phys()
             self.latest_physics_t = 0.0
             self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
             self.latest_frame_id += 1
@@ -106,7 +98,7 @@ class RealtimeSimulation:
     async def update_realtime_params(
         self,
         dt: float,
-        substeps: int,
+        speed: float,
         send_every: int,
         target_fps: int | None = None,
         point_size: float | None = None,
@@ -116,13 +108,12 @@ class RealtimeSimulation:
                 cfg_dict = asdict(self.cfg)
                 cfg_dict["dt"] = float(dt)
                 self.cfg = SimulationConfig(**cfg_dict)
-            self.substeps = max(1, int(substeps))
+            self.speed = min(10.0, max(0.1, float(speed)))
             self.send_every = max(1, int(send_every))
             if target_fps is not None:
                 self.target_fps = max(1, int(target_fps))
             if point_size is not None and point_size > 0:
                 self.point_size = float(point_size)
-            self._recompute_dt_phys()
             return self._params_payload()
 
     async def get_params_payload(self) -> dict:
@@ -142,13 +133,13 @@ class RealtimeSimulation:
             if not self.running:
                 return
 
+            dt_eff = self.cfg.dt * self.speed
             cfg_dict = asdict(self.cfg)
-            cfg_dict["dt"] = self.dt_phys
+            cfg_dict["dt"] = dt_eff
             step_cfg = SimulationConfig(**cfg_dict)
 
-            for _ in range(self.substeps):
-                step(self.particles, step_cfg, self.rng)
-            self.physics_time += self._sim_time_per_interval()
+            step(self.particles, step_cfg, self.rng)
+            self.physics_time += dt_eff
             self.latest_physics_t = self.physics_time
 
             if frame_interval_idx % self.send_every == 0:
@@ -261,14 +252,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     await ws.send_text(json.dumps(await sim.get_params_payload()))
                 elif cmd == "update_params":
                     dt = float(msg.get("dt", sim.cfg.dt))
-                    substeps = int(msg.get("substeps", sim.substeps))
+                    speed = float(msg.get("speed", sim.speed))
                     send_every = int(msg.get("send_every", sim.send_every))
                     target_fps = int(msg.get("target_fps", sim.target_fps))
                     point_size = msg.get("point_size")
                     if dt <= 0:
                         dt = sim.cfg.dt
-                    if substeps < 1:
-                        substeps = sim.substeps
+                    speed = min(10.0, max(0.1, speed))
                     if send_every < 1:
                         send_every = sim.send_every
                     if target_fps < 1:
@@ -276,7 +266,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
                     params = await sim.update_realtime_params(
                         dt=dt,
-                        substeps=substeps,
+                        speed=speed,
                         send_every=send_every,
                         target_fps=target_fps,
                         point_size=None if point_size is None else float(point_size),
@@ -303,16 +293,15 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--dt", type=float, default=sim.cfg.dt)
-    parser.add_argument("--substeps", type=int, default=10)
+    parser.add_argument("--speed", type=float, default=sim.speed)
     parser.add_argument("--send-every", type=int, default=1)
     args = parser.parse_args()
 
-    sim.substeps = max(1, args.substeps)
+    sim.speed = min(10.0, max(0.1, args.speed))
     sim.send_every = max(1, args.send_every)
 
     cfg_dict = asdict(sim.cfg)
     cfg_dict["dt"] = args.dt
     sim.cfg = SimulationConfig(**cfg_dict)
-    sim._recompute_dt_phys()
 
     uvicorn.run("particle_life.realtime:app", host=args.host, port=args.port)
