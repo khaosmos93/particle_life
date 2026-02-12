@@ -8,5 +8,5 @@
       "onAutoForward": "openBrowser"
     }
   },
-  "postCreateCommand": "python3 -m venv .venv && . .venv/bin/activate && pip install -U 'pip<25.3' && pip install pip-tools && pip-compile requirements.in && pip install -r requirements.txt && pip install -e ."
+  "postCreateCommand": "python3 -m venv .venv && . .venv/bin/activate && pip install -U 'pip<25.3' && pip install pip-tools && pip-compile requirements.in && pip install -r requirements.txt && pip install -e . && deactivate"
 }
