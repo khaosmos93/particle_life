@@ -32,6 +32,7 @@ function sendControlUpdate() {
   );
 }
 
+
 function updateControlValues() {
   dtValue.textContent = Number(dtSlider.value).toFixed(2);
   substepsValue.textContent = substepsSlider.value;
@@ -52,6 +53,10 @@ substepsSlider.oninput = () => {
 
 sendEverySlider.oninput = () => {
   updateControlValues();
+  sendControlUpdate();
+};
+
+ws.onopen = () => {
   sendControlUpdate();
 };
 
@@ -161,6 +166,17 @@ function render() {
 requestAnimationFrame(render);
 
 ws.onmessage = (event) => {
+  if (typeof event.data === "string") {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "params") {
+      dtSlider.value = String(msg.dt);
+      substepsSlider.value = String(msg.substeps);
+      sendEverySlider.value = String(msg.send_every);
+      updateControlValues();
+    }
+    return;
+  }
+
   const frameBuffer = event.data;
   const dv = new DataView(frameBuffer);
 
