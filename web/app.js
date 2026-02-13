@@ -246,12 +246,6 @@ let pointSize = 3;
 let running = true;
 let showPbcTiling = false;
 
-const pbcTileOffsets = [
-  [-1, -1], [0, -1], [1, -1],
-  [-1, 0], [0, 0], [1, 0],
-  [-1, 1], [0, 1], [1, 1],
-];
-
 updatePointSize(pointSizeSlider.value);
 
 function resizeCanvas() {
@@ -284,11 +278,30 @@ function render() {
     gl.uniform1f(uPointSize, pointSize);
 
     if (showPbcTiling) {
-      for (const [ox, oy] of pbcTileOffsets) {
-        gl.uniform2f(uTileOffset, ox, oy);
-        gl.drawArrays(gl.POINTS, 0, drawCount);
+      const columns = 3;
+      const rows = 3;
+      const gapPx = Math.max(1, Math.round((window.devicePixelRatio || 1) * 2));
+      const totalGapX = (columns - 1) * gapPx;
+      const totalGapY = (rows - 1) * gapPx;
+      const tileWidth = Math.max(1, Math.floor((canvas.width - totalGapX) / columns));
+      const tileHeight = Math.max(1, Math.floor((canvas.height - totalGapY) / rows));
+      const usedWidth = (tileWidth * columns) + totalGapX;
+      const usedHeight = (tileHeight * rows) + totalGapY;
+      const startX = Math.floor((canvas.width - usedWidth) / 2);
+      const startY = Math.floor((canvas.height - usedHeight) / 2);
+
+      gl.uniform2f(uTileOffset, 0, 0);
+      for (let row = 0; row < rows; row += 1) {
+        for (let col = 0; col < columns; col += 1) {
+          const x = startX + col * (tileWidth + gapPx);
+          const y = startY + row * (tileHeight + gapPx);
+          gl.viewport(x, y, tileWidth, tileHeight);
+          gl.drawArrays(gl.POINTS, 0, drawCount);
+        }
       }
+      gl.viewport(0, 0, canvas.width, canvas.height);
     } else {
+      gl.viewport(0, 0, canvas.width, canvas.height);
       gl.uniform2f(uTileOffset, 0, 0);
       gl.drawArrays(gl.POINTS, 0, drawCount);
     }
