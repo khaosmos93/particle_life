@@ -35,6 +35,33 @@
         align-items: center;
       }
 
+      #pbcControl {
+        position: fixed;
+        top: 12px;
+        left: 205px;
+        z-index: 11;
+        background: rgba(14, 22, 38, 0.92);
+        border: 2px solid #6eb8ff;
+        border-radius: 10px;
+        padding: 8px 12px;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0, 0, 0, 0.35);
+      }
+
+      #pbcControl label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #e9f3ff;
+      }
+
+      #pbcControl input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: #6eb8ff;
+      }
+
       #controls {
         position: fixed;
         top: 72px;
@@ -46,6 +73,7 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
+        max-width: min(90vw, 360px);
       }
 
       #controls label {
@@ -103,6 +131,30 @@
         display: flex;
         gap: 6px;
       }
+
+      @media (max-width: 700px) {
+        .panel {
+          top: 10px;
+          left: 10px;
+        }
+
+        #pbcControl {
+          left: 10px;
+          top: 58px;
+        }
+
+        #controls {
+          top: 112px;
+          left: 10px;
+          max-height: calc(100vh - 122px);
+          overflow-y: auto;
+        }
+
+        #stats {
+          top: 10px;
+          right: 10px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -110,6 +162,12 @@
     <div class="panel">
       <button id="toggleBtn">Pause</button>
       <button id="resetBtn">Reset</button>
+    </div>
+    <div id="pbcControl">
+      <label>
+        <input type="checkbox" id="pbcTilingToggle" />
+        Highlight 3×3 PBC Split View
+      </label>
     </div>
     <div id="controls">
       <label>
@@ -149,10 +207,6 @@
           <option value="softmax">softmax</option>
           <option value="hsv_like">hsv_like</option>
         </select>
-      </label>
-      <label>
-        <input type="checkbox" id="pbcTilingToggle" />
-        3×3 PBC View
       </label>
     </div>
     <div id="stats">
