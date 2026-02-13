@@ -13,12 +13,23 @@ def resolve_seed(seed: int | None) -> tuple[int, np.random.Generator]:
         seed_used = int(seed)
     return seed_used, np.random.default_rng(seed_used)
 
-
+# FIXME: hmmm
 def _build_random_particles(cfg, rng: np.random.Generator) -> list[Particle]:
     mass = 1.0
     pos = rng.uniform(0.0, cfg.box_size, size=(cfg.n_particles, 2))
     vel = 0.01 * rng.normal(size=(cfg.n_particles, 2))
-    state = rng.normal(size=(cfg.n_particles, cfg.state_dim))
+
+    # state = rng.normal(size=(cfg.n_particles, cfg.state_dim))
+    state = np.zeros((cfg.n_particles, cfg.state_dim), dtype=np.float64)
+    s = cfg.n_particles // 3
+    state[:s, 0] = 1.0
+    invsqrt2 = 1.0 / np.sqrt(2.0)
+    state[s:, 0] = invsqrt2
+    state[s:, 2] = invsqrt2
+    # state[s:2*s, 0] = invsqrt2
+    # state[s:2*s, 2] = invsqrt2
+    # state[2*s:, 1] = 1.0
+
     return [Particle(mass, pos[i], vel[i], state[i]) for i in range(cfg.n_particles)]
 
 

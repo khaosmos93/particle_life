@@ -64,9 +64,9 @@ class RealtimeSimulation:
         self.cfg = SimulationConfig(
             n_particles=100,
             state_dim=3,
-            dt=1.0,
+            dt=0.01,
             steps=0,
-            seed=int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]),
+            seed=0, #int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]),
             box_size=1.0,
             out_path=None,
         )
@@ -254,6 +254,21 @@ class RealtimeSimulation:
             }
 
     def _coupling_value(self, si: np.ndarray, sj: np.ndarray) -> float:
+        # FIXME: M should be configurable
+        # M = np.array([
+        #     [ 0.0, -0.8,  1.0],
+        #     [ 1.0,  0.0,  0.0],
+        #     [-2.0,  0.6,  0.0],
+        # ], dtype=np.float64)
+        M = np.array([
+            [0.0, 0.0, 1/np.sqrt(2)],
+            [0.0, 0.0, 0.0],
+            [-np.sqrt(2), 0.0, 0.0],
+        ], dtype=np.float64)
+        d = max(1, si.size)
+        x = float(si @ (M @ sj)) / d
+        return x
+        # return float(np.tanh(x))
         denom = max(1, si.size)
         return float(np.tanh(np.dot(si, sj) / denom))
 
@@ -273,13 +288,13 @@ class RealtimeSimulation:
                 delta,
                 coupling,
                 self.interaction["r_repulse"],
-                0.5 * self.interaction["r_cut"],
+                self.interaction["r_repulse"],  # FIXME r0?
                 self.interaction["r_cut"],
                 1.0,
                 self.interaction["strength"],
             )
             forces[i] += fij
-            forces[j] -= fij
+            # forces[j] -= fij
 
         damping = self.interaction["damping"]
         noise = self.interaction["noise"]

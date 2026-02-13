@@ -19,11 +19,11 @@ class SimulationConfig:
     seed: int = 0
     box_size: float = 1.0
     wrap: bool = True
-    r_min: float = 0.02
-    r0: float = 0.08
+    r_min: float = 0.01
+    r0: float = 0.01
     r_cut: float = 0.25
-    k_rep: float = 1.0
-    k_mid: float = 0.5
+    k_rep: float = 0.5
+    k_mid: float = 100.0
     gamma: float = 0.2
     sigma: float = 0.05
     chunk: int = 1

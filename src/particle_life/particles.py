@@ -61,7 +61,7 @@ def neighbor_pairs(
                 j_list = cells.get((nx, ny), [])
                 for i in i_list:
                     for j in j_list:
-                        if i < j:
+                        if i != j:
                             pairs.append((i, j))
 
     if not pairs:
@@ -73,10 +73,18 @@ def neighbor_pairs(
 
 
 def coupling_state(state_i: np.ndarray, state_j: np.ndarray) -> float:
-    d = max(1, state_i.size)
-    return float(np.tanh(np.dot(state_i, state_j) / d))
+    # d = max(1, state_i.size)
+    # c = float(np.tanh(np.dot(state_i, state_j) / d))
+    c = float(0.0)
+    if np.array_equal(state_i, state_j):
+        c = 0.1
+    elif state_i[0] > state_j[0]:
+        c = 1.0
+    else:
+        c = -0.5
+    return c
 
-
+# FIXME
 def pair_force_from_delta(
     delta: np.ndarray,
     c: float,
@@ -98,7 +106,7 @@ def pair_force_from_delta(
 
     return -mag * unit
 
-
+# FIXME: this is obsolute
 def compute_net_forces(
     particles: list[Particle],
     box_size: float,
@@ -129,7 +137,7 @@ def compute_net_forces(
         c = coupling_state(particles[i].state, particles[j].state)
         fij = pair_force_from_delta(delta, c, r_min, r0, r_cut, k_rep, k_mid)
         forces[i] += fij
-        forces[j] -= fij
+        # forces[j] -= fij
 
     for i, p in enumerate(particles):
         forces[i] += -gamma * p.vel + sigma * rng.normal(0.0, 1.0, size=2)
