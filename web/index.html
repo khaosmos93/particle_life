@@ -58,16 +58,16 @@
       #controls .pbcToggle {
         padding: 8px 10px;
         background: rgba(14, 22, 38, 0.95);
-        border: 2px solid #6eb8ff;
-        border-radius: 8px;
+        border: 0px solid #6eb8ff;
+        border-radius: 0px;
         color: #e9f3ff;
-        font-size: 14px;
+        font-size: 8px;
         font-weight: 700;
       }
 
       #controls .pbcToggle input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
+        width: 10px;
+        height: 10px;
         accent-color: #6eb8ff;
       }
 
@@ -132,11 +132,11 @@
       <div class="row">
         <button id="toggleBtn">Pause</button>
         <button id="resetBtn">Reset</button>
+        <label class="pbcToggle">
+          <input type="checkbox" id="pbcTilingToggle" />
+          3×3 PBC View
+        </label>
       </div>
-      <label class="pbcToggle">
-        <input type="checkbox" id="pbcTilingToggle" />
-        3×3 PBC View
-      </label>
       <label>
         dt:
         <input type="range" id="dtSlider" min="0.001" max="0.1" step="0.001" value="0.01" />
