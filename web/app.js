@@ -15,6 +15,7 @@ const sendEverySlider = document.getElementById("sendEverySlider");
 const pointSizeSlider = document.getElementById("pointSize");
 const seedInput = document.getElementById("seedInput");
 const colorSchemeSelect = document.getElementById("colorSchemeSelect");
+const pbcTilingToggle = document.getElementById("pbcTilingToggle");
 
 const dtValue = document.getElementById("dtValue");
 const speedValue = document.getElementById("speedValue");
@@ -150,6 +151,10 @@ colorSchemeSelect.onchange = () => {
   sendControlUpdate();
 };
 
+pbcTilingToggle.addEventListener("change", () => {
+  showPbcTiling = pbcTilingToggle.checked;
+});
+
 document.getElementById("randomizeSeedBtn").addEventListener("click", () => {
   seedInput.value = String(Math.floor(Math.random() * 1e9));
 });
@@ -176,12 +181,13 @@ attribute vec3 a_rgb;
 
 uniform float u_box;
 uniform float u_pointSize;
+uniform vec2 u_tileOffset;
 
 varying vec3 v_rgb;
 
 void main() {
     vec3 p = a_pos / u_box;
-    vec2 clip = p.xy * 2.0 - 1.0;
+    vec2 clip = (p.xy + u_tileOffset) * 2.0 - 1.0;
     clip.y = -clip.y;
 
     gl_Position = vec4(clip, 0.0, 1.0);
@@ -230,6 +236,7 @@ const aPos = gl.getAttribLocation(program, "a_pos");
 const aRgb = gl.getAttribLocation(program, "a_rgb");
 const uBox = gl.getUniformLocation(program, "u_box");
 const uPointSize = gl.getUniformLocation(program, "u_pointSize");
+const uTileOffset = gl.getUniformLocation(program, "u_tileOffset");
 
 const buffer = gl.createBuffer();
 let drawCount = 0;
@@ -237,6 +244,13 @@ let stride = 0;
 let boxSize = 1;
 let pointSize = 3;
 let running = true;
+let showPbcTiling = false;
+
+const pbcTileOffsets = [
+  [-1, -1], [0, -1], [1, -1],
+  [-1, 0], [0, 0], [1, 0],
+  [-1, 1], [0, 1], [1, 1],
+];
 
 updatePointSize(pointSizeSlider.value);
 
@@ -269,7 +283,15 @@ function render() {
     gl.uniform1f(uBox, boxSize);
     gl.uniform1f(uPointSize, pointSize);
 
-    gl.drawArrays(gl.POINTS, 0, drawCount);
+    if (showPbcTiling) {
+      for (const [ox, oy] of pbcTileOffsets) {
+        gl.uniform2f(uTileOffset, ox, oy);
+        gl.drawArrays(gl.POINTS, 0, drawCount);
+      }
+    } else {
+      gl.uniform2f(uTileOffset, 0, 0);
+      gl.drawArrays(gl.POINTS, 0, drawCount);
+    }
   }
 
   updateStatsLabels();
