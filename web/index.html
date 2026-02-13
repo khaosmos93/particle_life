@@ -22,58 +22,21 @@
         display: block;
       }
 
-      .panel {
-        position: fixed;
-        top: 12px;
-        left: 12px;
-        z-index: 10;
-        background: rgba(0, 0, 0, 0.55);
-        border-radius: 8px;
-        padding: 10px;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-
-      #pbcControl {
-        position: fixed;
-        top: 12px;
-        left: 205px;
-        z-index: 11;
-        background: rgba(14, 22, 38, 0.92);
-        border: 2px solid #6eb8ff;
-        border-radius: 10px;
-        padding: 8px 12px;
-        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0, 0, 0, 0.35);
-      }
-
-      #pbcControl label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 600;
-        color: #e9f3ff;
-      }
-
-      #pbcControl input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        accent-color: #6eb8ff;
-      }
-
       #controls {
         position: fixed;
-        top: 72px;
+        top: 12px;
         left: 12px;
-        z-index: 10;
-        background: rgba(0, 0, 0, 0.6);
+        z-index: 20;
+        background: rgba(0, 0, 0, 0.75);
         border-radius: 8px;
         padding: 10px;
         display: flex;
         flex-direction: column;
         gap: 8px;
         max-width: min(90vw, 360px);
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
       }
 
       #controls label {
@@ -90,6 +53,22 @@
       #controls span {
         min-width: 36px;
         text-align: right;
+      }
+
+      #controls .pbcToggle {
+        padding: 8px 10px;
+        background: rgba(14, 22, 38, 0.95);
+        border: 2px solid #6eb8ff;
+        border-radius: 8px;
+        color: #e9f3ff;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      #controls .pbcToggle input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        accent-color: #6eb8ff;
       }
 
       #stats {
@@ -133,21 +112,11 @@
       }
 
       @media (max-width: 700px) {
-        .panel {
+        #controls {
           top: 10px;
           left: 10px;
-        }
-
-        #pbcControl {
-          left: 10px;
-          top: 58px;
-        }
-
-        #controls {
-          top: 112px;
-          left: 10px;
-          max-height: calc(100vh - 122px);
-          overflow-y: auto;
+          max-width: calc(100vw - 20px);
+          max-height: calc(100vh - 20px);
         }
 
         #stats {
@@ -159,17 +128,15 @@
   </head>
   <body>
     <canvas id="glcanvas"></canvas>
-    <div class="panel">
-      <button id="toggleBtn">Pause</button>
-      <button id="resetBtn">Reset</button>
-    </div>
-    <div id="pbcControl">
-      <label>
-        <input type="checkbox" id="pbcTilingToggle" />
-        Highlight 3×3 PBC Split View
-      </label>
-    </div>
     <div id="controls">
+      <div class="row">
+        <button id="toggleBtn">Pause</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+      <label class="pbcToggle">
+        <input type="checkbox" id="pbcTilingToggle" />
+        3×3 PBC View
+      </label>
       <label>
         dt:
         <input type="range" id="dtSlider" min="0.001" max="0.1" step="0.001" value="0.01" />
