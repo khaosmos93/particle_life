@@ -1,7 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "particle-life"
-version = "0.0.1"
-requires-python = ">=3.10"
+version = "0.1.0"
+description = "Minimal particle-life realtime FastAPI + WebGL app"
+requires-python = "==3.12.1"
 
 [tool.setuptools.packages.find]
 where = ["src"]
