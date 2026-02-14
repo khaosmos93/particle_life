@@ -17,14 +17,16 @@ const appState = {
   paused: false,
   subscribers: new Set(),
 };
-let matrixCommitTimer = null;
-
 let pointCount = 0;
 let positions = new Float32Array();
 let species = new Float32Array();
 let velocities = new Float32Array();
 let matrixGrid;
 let statsNodes = {};
+let latestUpdateToken = 0;
+let latestAppliedUpdateToken = 0;
+let matrixUpdateInFlight = false;
+let matrixUpdateQueued = false;
 
 const perf = { gfxFrames: 0, physicsFrames: 0, lastStamp: performance.now(), gfxFps: 0, physicsFps: 0 };
 
@@ -138,7 +140,10 @@ async function postJSON(path, body = {}) {
 }
 
 async function applyUpdates(updates) {
+  const updateToken = ++latestUpdateToken;
   const result = await postJSON("/api/config/update", { updates });
+  if (updateToken < latestAppliedUpdateToken) return;
+  latestAppliedUpdateToken = updateToken;
   setRemoteState({ values: result.values });
 }
 
@@ -148,12 +153,20 @@ async function setPaused(paused) {
   buildUI();
 }
 
-function scheduleMatrixCommit() {
-  if (matrixCommitTimer) clearTimeout(matrixCommitTimer);
-  matrixCommitTimer = setTimeout(() => {
-    matrixCommitTimer = null;
-    applyUpdates({ interaction_matrix: appState.matrixDraft });
-  }, 120);
+function pushMatrixUpdate() {
+  if (matrixUpdateInFlight) {
+    matrixUpdateQueued = true;
+    return;
+  }
+  matrixUpdateInFlight = true;
+  applyUpdates({ interaction_matrix: appState.matrixDraft.map((row) => [...row]) })
+    .finally(() => {
+      matrixUpdateInFlight = false;
+      if (matrixUpdateQueued) {
+        matrixUpdateQueued = false;
+        pushMatrixUpdate();
+      }
+    });
 }
 
 async function applyControlValue(key, raw, control) {
@@ -288,7 +301,7 @@ function buildMatrixEditor(parent) {
     }
     appState.matrixDraft = matrix.map((r) => r.map(clampMatrixValue));
     syncMatrix();
-    scheduleMatrixCommit();
+    pushMatrixUpdate();
   });
 
   toolbar.append(presetSelect, presetApply);
@@ -329,11 +342,22 @@ function syncMatrix() {
       input.value = matrix[i][j].toFixed(3);
       input.style.background = matrixColor(matrix[i][j]);
       input.title = `${i} → ${j}`;
+      const applyCellValue = (rawValue, commit = true) => {
+        const parsed = Number(rawValue);
+        if (!Number.isFinite(parsed)) return;
+        const next = clampMatrixValue(parsed);
+        if (next === appState.matrixDraft[i][j]) return;
+        appState.matrixDraft[i][j] = next;
+        input.style.background = matrixColor(next);
+        if (commit) pushMatrixUpdate();
+      };
+
       input.addEventListener("input", () => {
-        appState.matrixDraft[i][j] = clampMatrixValue(input.value);
+        applyCellValue(input.value, true);
+      });
+
+      input.addEventListener("change", () => {
         input.value = appState.matrixDraft[i][j].toFixed(3);
-        input.style.background = matrixColor(appState.matrixDraft[i][j]);
-        scheduleMatrixCommit();
       });
 
       input.addEventListener("mousedown", (event) => {
@@ -343,15 +367,14 @@ function syncMatrix() {
         const startValue = appState.matrixDraft[i][j];
         const onMove = (moveEvent) => {
           const delta = ((startY - moveEvent.clientY) + (moveEvent.clientX - startX)) * 0.004;
-          appState.matrixDraft[i][j] = clampMatrixValue(startValue + delta);
-          input.value = appState.matrixDraft[i][j].toFixed(3);
-          input.style.background = matrixColor(appState.matrixDraft[i][j]);
-          scheduleMatrixCommit();
+          const value = clampMatrixValue(startValue + delta);
+          input.value = value.toFixed(3);
+          applyCellValue(value, true);
         };
         const onUp = () => {
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
-          scheduleMatrixCommit();
+          input.value = appState.matrixDraft[i][j].toFixed(3);
         };
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp, { once: true });
