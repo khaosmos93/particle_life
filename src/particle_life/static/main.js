@@ -276,6 +276,53 @@ function bindControl(parent, control) {
   parent.appendChild(row);
 }
 
+
+function buildParticleCountControls(parent) {
+  const speciesCount = Number(appState.values.species_count || 0);
+  const defaultCount = Number(appState.values.particles_per_species || 0);
+  const counts = Array.isArray(appState.values.particle_counts) ? appState.values.particle_counts.slice(0, speciesCount) : [];
+  while (counts.length < speciesCount) counts.push(defaultCount);
+
+  const hint = document.createElement("div");
+  hint.className = "mini";
+  hint.textContent = "Per-type particle counts (applies on reset)";
+  parent.appendChild(hint);
+
+  counts.forEach((count, idx) => {
+    const row = document.createElement("div");
+    row.className = "field-row";
+
+    const label = document.createElement("label");
+    label.textContent = `Type ${idx + 1}`;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "400";
+    input.step = "1";
+    input.value = String(count);
+    input.style.width = "88px";
+
+    const valueNode = document.createElement("span");
+    valueNode.className = "value";
+    valueNode.textContent = input.value;
+
+    const applyTag = document.createElement("span");
+    applyTag.className = "apply-tag";
+    applyTag.textContent = "reset";
+
+    input.addEventListener("change", () => {
+      valueNode.textContent = input.value;
+      const nextCounts = counts.slice();
+      nextCounts[idx] = Number(input.value);
+      applyUpdates({ particle_counts: nextCounts });
+    });
+
+    row.append(label, input, valueNode, applyTag);
+    parent.appendChild(row);
+  });
+}
+
 function buildMatrixEditor(parent) {
   const toolbar = document.createElement("div");
   toolbar.className = "matrix-toolbar";
@@ -390,7 +437,7 @@ function buildUI() {
 
   if (appState.values.show_hud !== false) {
     createSection("Info", (body) => {
-      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Velocity std dev", "Matrix version"].forEach((k) => {
+      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Per-type counts", "Velocity std dev", "Matrix version"].forEach((k) => {
         const line = document.createElement("div");
         line.className = "stats-line";
         const name = document.createElement("span");
@@ -436,10 +483,16 @@ function buildUI() {
   });
 
   appState.sections.forEach((section) => {
-    createSection(section.label, (body) => section.controls.forEach((control) => bindControl(body, control)));
+    createSection(section.label, (body) => {
+      section.controls.forEach((control) => bindControl(body, control));
+      if (section.key === "simulation") {
+        buildParticleCountControls(body);
+      }
+    });
+    if (section.key === "simulation") {
+      createSection("Interaction Matrix", (body) => buildMatrixEditor(body));
+    }
   });
-
-  createSection("Interaction Matrix", (body) => buildMatrixEditor(body));
   syncMatrix();
 }
 
@@ -534,6 +587,8 @@ function updateStats() {
       statsNodes["Speed ratio"].textContent = (perf.physicsFps / Math.max(perf.gfxFps, 0.1)).toFixed(2);
       statsNodes["Particles"].textContent = String(pointCount);
       statsNodes["Types"].textContent = String(appState.values.species_count ?? "--");
+      const displayCounts = Array.isArray(appState.values.particle_counts) ? appState.values.particle_counts.join(",") : "--";
+      statsNodes["Per-type counts"].textContent = displayCounts;
       statsNodes["Velocity std dev"].textContent = velocityStdDev().toFixed(4);
       statsNodes["Matrix version"].textContent = String(appState.values.matrix_version ?? "--");
     }

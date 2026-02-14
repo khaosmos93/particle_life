@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 class SimConfig:
     species_count: int = 6
     particles_per_species: int = 160
+    particle_counts: list[int] = field(default_factory=list)
     world_size: float = 1.0
     interaction_radius: float = 0.11
     repel_radius: float = 0.025
@@ -103,10 +104,15 @@ class ParticleLifeSim:
 
     def reset_state(self, random_matrix: bool = False) -> None:
         cfg = self.cfg
-        self.count = cfg.species_count * cfg.particles_per_species
+        cfg.particle_counts = _sanitize_particle_counts(cfg.particle_counts, cfg.species_count, cfg.particles_per_species)
+        self.count = int(sum(cfg.particle_counts))
         self.positions = self.rng.random((self.count, 2), dtype=np.float32) * cfg.world_size
         self.velocities = np.zeros((self.count, 2), dtype=np.float32)
-        self.species = np.repeat(np.arange(cfg.species_count), cfg.particles_per_species).astype(np.int32)
+        self.species = np.concatenate([
+            np.full(count, species_idx, dtype=np.int32)
+            for species_idx, count in enumerate(cfg.particle_counts)
+            if count > 0
+        ]) if self.count else np.empty((0,), dtype=np.int32)
         self.rng.shuffle(self.species)
         if random_matrix or not hasattr(self, "matrix") or self.matrix.shape[0] != cfg.species_count:
             self.matrix = self.rng.uniform(-1.0, 1.0, (cfg.species_count, cfg.species_count)).astype(np.float32)
@@ -208,6 +214,20 @@ def _sanitize_matrix(matrix, species_count: int) -> np.ndarray:
     return np.clip(arr, -1.0, 1.0).astype(np.float32)
 
 
+def _sanitize_particle_counts(counts, species_count: int, default_count: int) -> list[int]:
+    if not isinstance(counts, (list, tuple)):
+        counts = []
+    sanitized = []
+    for idx in range(species_count):
+        raw = counts[idx] if idx < len(counts) else default_count
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = int(default_count)
+        sanitized.append(int(_clamp_numeric({"min": 0, "max": 400}, value)))
+    return sanitized
+
+
 app = FastAPI(title="Particle Life")
 app.mount("/static", StaticFiles(directory="src/particle_life/static"), name="static")
 control_index = _build_control_index()
@@ -245,6 +265,16 @@ async def update_config(payload: ConfigUpdate) -> dict:
                 needs_reset = True
 
     next_species_count = int(values["species_count"])
+    particle_counts_updated = False
+    if "particle_counts" in payload.updates:
+        values["particle_counts"] = _sanitize_particle_counts(payload.updates["particle_counts"], next_species_count, int(values["particles_per_species"]))
+        needs_reset = True
+        particle_counts_updated = True
+    if "particles_per_species" in payload.updates and not particle_counts_updated:
+        values["particle_counts"] = _sanitize_particle_counts([], next_species_count, int(values["particles_per_species"]))
+    elif "species_count" in payload.updates and not particle_counts_updated:
+        values["particle_counts"] = _sanitize_particle_counts(values.get("particle_counts", []), next_species_count, int(values["particles_per_species"]))
+
     if "interaction_matrix" in payload.updates:
         next_matrix = _sanitize_matrix(payload.updates["interaction_matrix"], next_species_count)
 
