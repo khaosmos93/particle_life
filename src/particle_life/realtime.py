@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from particle_life.initializers import build_initial_state
-from particle_life.particles import minimum_image, neighbor_pairs, pair_force_from_delta
+from particle_life.particles import Interaction
 from particle_life.sim import SimulationConfig
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -93,14 +93,8 @@ class RealtimeSimulation:
             "send_n": 0,
         }
 
-        self.interaction = {
-            "r_repulse": self.cfg.r_min,
-            "r_cut": self.cfg.r_cut,
-            "strength": self.cfg.k_mid,
-            "noise": self.cfg.sigma,
-            "damping": self.cfg.gamma,
-        }
         self.rng = np.random.default_rng(self.cfg.seed)
+        self.interaction = self._make_interaction(self.rng)
         self.particles = self._init_realtime_particles()
         self.latest_bytes = pack_frame(self.particles, self.cfg.box_size)
 
@@ -118,6 +112,26 @@ class RealtimeSimulation:
     def _init_realtime_particles(self):
         _, particles, _ = build_initial_state(self.cfg, preset_id=None, seed=self.cfg.seed)
         return particles
+
+    def _make_interaction(self, rng: np.random.Generator) -> Interaction:
+        coupling_matrix = np.array([
+            [0.0, 0.0, 1 / np.sqrt(2)],
+            [0.0, 0.0, 0.0],
+            [-np.sqrt(2), 0.0, 0.0],
+        ], dtype=np.float64)
+        return Interaction(
+            box_size=self.cfg.box_size,
+            wrap=self.cfg.wrap,
+            r_min=self.cfg.r_min,
+            r0=self.cfg.r_min,
+            r_cut=self.cfg.r_cut,
+            k_rep=1.0,
+            k_mid=self.cfg.k_mid,
+            gamma=self.cfg.gamma,
+            sigma=self.cfg.sigma,
+            rng=rng,
+            coupling_matrix=coupling_matrix,
+        )
 
     def _params_payload(self) -> dict:
         return {
@@ -153,7 +167,7 @@ class RealtimeSimulation:
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = particles_new
             self.speed = float(meta.get("speed", self.speed))
-            self.interaction = dict(meta.get("interaction", self.interaction))
+            self.interaction = self._make_interaction(self.rng)
             self._reset_buffers()
 
     async def _apply_initial_state(self, seed: int | None) -> dict:
@@ -165,7 +179,7 @@ class RealtimeSimulation:
             self.particles = particles_new
             self.rng = np.random.default_rng(self.cfg.seed)
             self.speed = float(meta.get("speed", self.speed))
-            self.interaction = dict(meta.get("interaction", self.interaction))
+            self.interaction = self._make_interaction(self.rng)
             self._reset_buffers()
             return {
                 "type": "seed",
@@ -191,13 +205,7 @@ class RealtimeSimulation:
             self.target_fps = max(1, int(params.get("target_fps", self.target_fps)))
             self.rng = np.random.default_rng(self.cfg.seed)
             self.particles = self._init_realtime_particles()
-            self.interaction = {
-                "r_repulse": self.cfg.r_min,
-                "r_cut": self.cfg.r_cut,
-                "strength": self.cfg.k_mid,
-                "noise": self.cfg.sigma,
-                "damping": self.cfg.gamma,
-            }
+            self.interaction = self._make_interaction(self.rng)
             self._reset_buffers()
 
     async def update_realtime_params(
@@ -253,55 +261,8 @@ class RealtimeSimulation:
                 **payload,
             }
 
-    def _coupling_value(self, si: np.ndarray, sj: np.ndarray) -> float:
-        # FIXME: M should be configurable
-        # M = np.array([
-        #     [ 0.0, -0.8,  1.0],
-        #     [ 1.0,  0.0,  0.0],
-        #     [-2.0,  0.6,  0.0],
-        # ], dtype=np.float64)
-        M = np.array([
-            [0.0, 0.0, 1/np.sqrt(2)],
-            [0.0, 0.0, 0.0],
-            [-np.sqrt(2), 0.0, 0.0],
-        ], dtype=np.float64)
-        d = max(1, si.size)
-        x = float(si @ (M @ sj)) / d
-        return x
-        # return float(np.tanh(x))
-        denom = max(1, si.size)
-        return float(np.tanh(np.dot(si, sj) / denom))
-
     def _compute_forces(self) -> np.ndarray:
-        n = len(self.particles)
-        pos = np.asarray([p.pos for p in self.particles], dtype=np.float64)
-        i_idx, j_idx = neighbor_pairs(pos, self.cfg.box_size, self.interaction["r_cut"])
-        forces = np.zeros((n, 2), dtype=np.float64)
-
-        for i, j in zip(i_idx, j_idx):
-            delta = pos[j] - pos[i]
-            if self.cfg.wrap:
-                delta = minimum_image(delta, self.cfg.box_size)
-
-            coupling = self._coupling_value(self.particles[i].state, self.particles[j].state)
-            fij = pair_force_from_delta(
-                delta,
-                coupling,
-                self.interaction["r_repulse"],
-                self.interaction["r_repulse"],  # FIXME r0?
-                self.interaction["r_cut"],
-                1.0,
-                self.interaction["strength"],
-            )
-            forces[i] += fij
-            # forces[j] -= fij
-
-        damping = self.interaction["damping"]
-        noise = self.interaction["noise"]
-        for i, p in enumerate(self.particles):
-            forces[i] += -damping * p.vel + noise * self.rng.normal(0.0, 1.0, size=2)
-
-        return forces
+        return self.interaction.compute_net_forces(self.particles)
 
     async def physics_tick(self, frame_interval_idx: int) -> None:
         need_pack = False

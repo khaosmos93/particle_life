@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from particle_life.initializers import build_initial_state, resolve_seed
-from particle_life.particles import Particle, compute_net_forces
+from particle_life.particles import Interaction, Particle
 
 
 @dataclass
@@ -35,20 +35,8 @@ def init_particles(cfg: SimulationConfig) -> list[Particle]:
     return particles
 
 
-def step(particles: list[Particle], cfg: SimulationConfig, rng: np.random.Generator) -> None:
-    forces = compute_net_forces(
-        particles=particles,
-        box_size=cfg.box_size,
-        wrap=cfg.wrap,
-        r_min=cfg.r_min,
-        r0=cfg.r0,
-        r_cut=cfg.r_cut,
-        k_rep=cfg.k_rep,
-        k_mid=cfg.k_mid,
-        gamma=cfg.gamma,
-        sigma=cfg.sigma,
-        rng=rng,
-    )
+def step(particles: list[Particle], cfg: SimulationConfig, interaction: Interaction) -> None:
+    forces = interaction.compute_net_forces(particles)
 
     for i, p in enumerate(particles):
         p.vel = p.vel + (forces[i] / p.m) * cfg.dt
@@ -103,6 +91,18 @@ class Simulator:
         self.cfg = cfg
         _, self.rng = resolve_seed(cfg.seed)
         _, self.particles, _ = build_initial_state(cfg, preset_id=None, seed=cfg.seed)
+        self.interaction = Interaction(
+            box_size=cfg.box_size,
+            wrap=cfg.wrap,
+            r_min=cfg.r_min,
+            r0=cfg.r0,
+            r_cut=cfg.r_cut,
+            k_rep=cfg.k_rep,
+            k_mid=cfg.k_mid,
+            gamma=cfg.gamma,
+            sigma=cfg.sigma,
+            rng=self.rng,
+        )
 
     def run(self, out_path: str) -> None:
         os.makedirs(out_path, exist_ok=True)
@@ -134,7 +134,7 @@ class Simulator:
                 buffer.clear()
                 chunk_id += 1
 
-            step(self.particles, self.cfg, self.rng)
+            step(self.particles, self.cfg, self.interaction)
 
         if buffer:
             table = make_table_from_buffer(buffer, self.cfg.state_dim, schema)
