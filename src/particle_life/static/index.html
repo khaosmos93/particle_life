@@ -16,24 +16,34 @@
         margin: 0;
         width: 100%;
         height: 100%;
-        overflow: hidden;
         font-family: Inter, Segoe UI, system-ui, sans-serif;
         background: #030612;
         color: var(--text);
       }
-      canvas { display: block; width: 100vw; height: 100vh; }
+      #app {
+        width: 100%;
+        height: 100%;
+        display: flex;
+      }
       #panel {
-        position: fixed;
-        left: 0;
-        top: 0;
-        z-index: 20;
+        flex: 0 0 360px;
         width: 360px;
-        height: 100vh;
+        height: 100%;
         overflow: auto;
         box-sizing: border-box;
         padding: 10px;
         background: var(--panel-bg);
         border-right: 1px solid var(--panel-border);
+      }
+      #canvas-wrap {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
       }
       .section {
         margin-bottom: 10px;
@@ -94,14 +104,25 @@
         justify-self: center;
         align-self: center;
       }
+      .type-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.45);
+        flex: 0 0 auto;
+      }
       .matrix-toolbar, .row { display: flex; gap: 6px; margin-bottom: 6px; }
       .matrix-toolbar select, .matrix-toolbar button { flex: 1; }
       .mini { font-size: 11px; color: var(--soft); margin-bottom: 5px; }
     </style>
   </head>
   <body>
-    <div id="panel"></div>
-    <canvas id="canvas"></canvas>
+    <div id="app">
+      <div id="panel"></div>
+      <div id="canvas-wrap">
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
     <script type="module" src="/static/main.js"></script>
   </body>
 </html>

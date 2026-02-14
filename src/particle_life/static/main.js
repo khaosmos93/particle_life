@@ -1,5 +1,6 @@
 const canvas = document.getElementById("canvas");
 const panel = document.getElementById("panel");
+const canvasWrap = document.getElementById("canvas-wrap");
 const gl = canvas.getContext("webgl");
 if (!gl) throw new Error("WebGL unavailable");
 
@@ -35,6 +36,7 @@ attribute vec2 a_pos;
 attribute float a_species;
 attribute vec2 a_vel;
 uniform vec2 u_scale;
+uniform vec2 u_offset;
 uniform float u_pointSize;
 uniform int u_colorMode;
 varying vec4 v_color;
@@ -50,7 +52,7 @@ vec3 speciesColor(float i) {
   return vec3(0.8, 0.85, 1.0);
 }
 void main() {
-  vec2 clip = a_pos * 2.0 - 1.0;
+  vec2 clip = (a_pos + u_offset) * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
   gl_PointSize = u_pointSize * u_scale.x;
   if (u_colorMode == 1) {
@@ -94,14 +96,20 @@ const aPos = gl.getAttribLocation(program, "a_pos");
 const aSpecies = gl.getAttribLocation(program, "a_species");
 const aVel = gl.getAttribLocation(program, "a_vel");
 const uScale = gl.getUniformLocation(program, "u_scale");
+const uOffset = gl.getUniformLocation(program, "u_offset");
 const uPointSize = gl.getUniformLocation(program, "u_pointSize");
 const uOpacity = gl.getUniformLocation(program, "u_opacity");
 const uColorMode = gl.getUniformLocation(program, "u_colorMode");
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(window.innerWidth * dpr);
-  canvas.height = Math.floor(window.innerHeight * dpr);
+  const rect = canvasWrap.getBoundingClientRect();
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
   gl.viewport(0, 0, canvas.width, canvas.height);
 }
 window.addEventListener("resize", resize);
@@ -292,8 +300,10 @@ function buildParticleCountControls(parent) {
     const row = document.createElement("div");
     row.className = "field-row";
 
-    const label = document.createElement("label");
-    label.textContent = `Type ${idx + 1}`;
+    const dot = document.createElement("div");
+    dot.className = "type-dot";
+    dot.style.background = TYPE_COLORS[idx % TYPE_COLORS.length];
+    dot.title = `Type ${idx + 1}`;
 
     const input = document.createElement("input");
     input.type = "number";
@@ -318,7 +328,7 @@ function buildParticleCountControls(parent) {
       applyUpdates({ particle_counts: nextCounts });
     });
 
-    row.append(label, input, valueNode, applyTag);
+    row.append(dot, input, valueNode, applyTag);
     parent.appendChild(row);
   });
 }
@@ -505,14 +515,9 @@ function validateParams() {
   }
 }
 
-function drawInstances(offsetX, offsetY) {
-  const shifted = new Float32Array(positions.length);
-  for (let i = 0; i < pointCount; i += 1) {
-    shifted[i * 2] = positions[i * 2] + offsetX;
-    shifted[i * 2 + 1] = positions[i * 2 + 1] + offsetY;
-  }
+function prepareBuffers() {
   gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, shifted, gl.DYNAMIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(aPos);
   gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
@@ -525,7 +530,16 @@ function drawInstances(offsetX, offsetY) {
   gl.bufferData(gl.ARRAY_BUFFER, velocities, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(aVel);
   gl.vertexAttribPointer(aVel, 2, gl.FLOAT, false, 0, 0);
+}
+
+function drawInstances(offsetX, offsetY) {
+  gl.uniform2f(uOffset, offsetX, offsetY);
   gl.drawArrays(gl.POINTS, 0, pointCount);
+}
+
+function drawView(originX, originY, width, height) {
+  gl.viewport(originX, originY, width, height);
+  drawInstances(0, 0);
 }
 
 function draw() {
@@ -536,15 +550,26 @@ function draw() {
 
   gl.useProgram(program);
   gl.uniform2f(uScale, window.devicePixelRatio || 1, 1);
+  prepareBuffers();
   gl.uniform1f(uPointSize, Number(appState.values.point_size ?? 3));
   gl.uniform1f(uOpacity, Number(appState.values.point_opacity ?? 0.95));
   const mode = appState.values.color_mode === "velocity" ? 1 : appState.values.color_mode === "mono" ? 2 : 0;
   gl.uniform1i(uColorMode, mode);
 
   if (appState.values.pbc_tiling) {
-    for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) drawInstances(dx, dy);
+    const tileWidth = Math.floor(canvas.width / 3);
+    const tileHeight = Math.floor(canvas.height / 3);
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 3; col += 1) {
+        const x = col * tileWidth;
+        const y = row * tileHeight;
+        const w = col === 2 ? canvas.width - x : tileWidth;
+        const h = row === 2 ? canvas.height - y : tileHeight;
+        drawView(x, y, w, h);
+      }
+    }
   } else {
-    drawInstances(0, 0);
+    drawView(0, 0, canvas.width, canvas.height);
   }
 }
 
