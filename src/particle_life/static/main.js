@@ -14,6 +14,9 @@ const ui = {
 let configSchema = null;
 let configValues = null;
 const controls = {};
+const panelState = new Map();
+let matrixInput = null;
+let matrixValueSpans = [];
 
 const vertexSrc = `
 attribute vec2 a_pos;
@@ -173,7 +176,7 @@ function valueText(v) {
   return Number.isInteger(v) ? String(v) : Number(v).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function buildControl(control, value) {
+function buildControl(control) {
   const row = document.createElement("label");
   row.innerHTML = `<span class="left">${control.label}</span>`;
   let input;
@@ -209,6 +212,192 @@ function buildControl(control, value) {
   return row;
 }
 
+function toggleSection(sectionKey, header, body) {
+  const collapsed = !panelState.get(sectionKey);
+  panelState.set(sectionKey, collapsed);
+  body.style.display = collapsed ? "none" : "block";
+  header.dataset.collapsed = String(collapsed);
+}
+
+function buildCollapsibleSection(section) {
+  const box = document.createElement("div");
+  box.className = "section";
+  const header = document.createElement("h3");
+  header.className = "section-header";
+  header.textContent = section.label;
+  const body = document.createElement("div");
+  body.className = "section-body";
+
+  const initiallyCollapsed = panelState.get(section.key) ?? false;
+  panelState.set(section.key, initiallyCollapsed);
+  if (initiallyCollapsed) {
+    body.style.display = "none";
+    header.dataset.collapsed = "true";
+  }
+
+  header.addEventListener("click", () => toggleSection(section.key, header, body));
+  section.controls.forEach((c) => body.appendChild(buildControl(c)));
+  box.appendChild(header);
+  box.appendChild(body);
+  return box;
+}
+
+function cloneMatrix(matrix) {
+  return matrix.map((row) => row.map((v) => Number(v)));
+}
+
+function clampMatrixValue(value) {
+  return Math.max(-1, Math.min(1, Number(value)));
+}
+
+async function pushMatrix(matrix) {
+  const next = cloneMatrix(matrix);
+  const result = await postJSON("/api/config/update", { updates: { interaction_matrix: next } });
+  configValues = result.values;
+  syncValues();
+}
+
+function matrixMutate(mutator) {
+  if (!configValues?.interaction_matrix) return;
+  const next = cloneMatrix(configValues.interaction_matrix);
+  mutator(next);
+  pushMatrix(next);
+}
+
+function normalizeMatrixRows(matrix) {
+  return matrix.map((row) => {
+    const maxAbs = row.reduce((acc, v) => Math.max(acc, Math.abs(v)), 0);
+    if (maxAbs < 1e-9) return row.slice();
+    return row.map((v) => clampMatrixValue(v / maxAbs));
+  });
+}
+
+function buildMatrixEditor() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "matrix-editor";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "row";
+
+  const randomizeBtn = document.createElement("button");
+  randomizeBtn.textContent = "Randomize Matrix";
+  randomizeBtn.addEventListener("click", () => {
+    matrixMutate((matrix) => {
+      for (let i = 0; i < matrix.length; i += 1) {
+        for (let j = 0; j < matrix.length; j += 1) {
+          matrix[i][j] = i === j ? 0.2 + Math.random() * 0.8 : -1 + Math.random() * 2;
+        }
+      }
+    });
+  });
+
+  const resetBtn = document.createElement("button");
+  resetBtn.textContent = "Reset Matrix";
+  resetBtn.addEventListener("click", () => {
+    const n = Number(configValues?.species_count ?? 0);
+    matrixMutate((matrix) => {
+      for (let i = 0; i < n; i += 1) {
+        for (let j = 0; j < n; j += 1) matrix[i][j] = i === j ? 1 : 0;
+      }
+    });
+  });
+
+  const symmetryBtn = document.createElement("button");
+  symmetryBtn.textContent = "Symmetrize";
+  symmetryBtn.addEventListener("click", () => {
+    matrixMutate((matrix) => {
+      for (let i = 0; i < matrix.length; i += 1) {
+        for (let j = i + 1; j < matrix.length; j += 1) {
+          const avg = clampMatrixValue((matrix[i][j] + matrix[j][i]) * 0.5);
+          matrix[i][j] = avg;
+          matrix[j][i] = avg;
+        }
+      }
+    });
+  });
+
+  const normalizeBtn = document.createElement("button");
+  normalizeBtn.textContent = "Normalize";
+  normalizeBtn.addEventListener("click", () => {
+    matrixMutate((matrix) => {
+      const normalized = normalizeMatrixRows(matrix);
+      for (let i = 0; i < matrix.length; i += 1) matrix[i] = normalized[i];
+    });
+  });
+
+  toolbar.append(randomizeBtn, resetBtn, symmetryBtn, normalizeBtn);
+  wrapper.appendChild(toolbar);
+
+  matrixInput = document.createElement("div");
+  matrixInput.className = "matrix-grid";
+  wrapper.appendChild(matrixInput);
+  return wrapper;
+}
+
+function wireMatrixDrag(input, i, j) {
+  let startY = 0;
+  let startValue = 0;
+  const onMove = (event) => {
+    const delta = (startY - event.clientY) * 0.01;
+    const next = clampMatrixValue(startValue + delta);
+    input.value = String(next);
+    input.dispatchEvent(new Event("change"));
+  };
+  const onUp = () => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+  input.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    startY = event.clientY;
+    startValue = Number(configValues.interaction_matrix[i][j]);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+}
+
+function syncMatrixEditor() {
+  if (!matrixInput) return;
+  const matrix = configValues?.interaction_matrix;
+  if (!matrix) {
+    matrixInput.innerHTML = "";
+    return;
+  }
+  const n = matrix.length;
+  matrixInput.style.gridTemplateColumns = `repeat(${n}, minmax(42px, 1fr))`;
+
+  if (matrixValueSpans.length !== n * n) {
+    matrixInput.innerHTML = "";
+    matrixValueSpans = [];
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = "-1";
+        input.max = "1";
+        input.step = "0.01";
+        input.className = "matrix-cell";
+        input.addEventListener("change", async () => {
+          const next = cloneMatrix(configValues.interaction_matrix);
+          next[i][j] = clampMatrixValue(input.value);
+          await pushMatrix(next);
+        });
+        wireMatrixDrag(input, i, j);
+        matrixValueSpans.push(input);
+        matrixInput.appendChild(input);
+      }
+    }
+  }
+
+  matrixValueSpans.forEach((input, idx) => {
+    const i = Math.floor(idx / n);
+    const j = idx % n;
+    input.value = valueText(matrix[i][j]);
+    input.title = `${i}→${j}`;
+  });
+}
+
 function syncValues() {
   Object.entries(controls).forEach(([key, ctx]) => {
     const v = configValues[key];
@@ -216,6 +405,7 @@ function syncValues() {
     else ctx.input.value = v;
     ctx.val.textContent = ctx.control.type === "toggle" ? (v ? "on" : "off") : valueText(v);
   });
+  syncMatrixEditor();
   draw();
 }
 
@@ -231,14 +421,12 @@ async function initUI() {
   });
 
   configSchema.forEach((section) => {
-    const box = document.createElement("div");
-    box.className = "section";
-    const h = document.createElement("h3");
-    h.textContent = section.label;
-    box.appendChild(h);
-    section.controls.forEach((c) => box.appendChild(buildControl(c, configValues[c.key])));
-    ui.sections.appendChild(box);
+    ui.sections.appendChild(buildCollapsibleSection(section));
   });
+
+  const matrixSection = buildCollapsibleSection({ key: "interaction_matrix", label: "Interaction Matrix", controls: [] });
+  matrixSection.querySelector(".section-body").appendChild(buildMatrixEditor());
+  ui.sections.appendChild(matrixSection);
 
   ui.resetBtn.addEventListener("click", async () => {
     const r = await postJSON("/api/config/reset");

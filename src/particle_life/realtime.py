@@ -105,6 +105,16 @@ class ParticleLifeSim:
             self.matrix = self.rng.uniform(-1.0, 1.0, (cfg.species_count, cfg.species_count)).astype(np.float32)
             np.fill_diagonal(self.matrix, self.rng.uniform(0.2, 1.0, cfg.species_count))
 
+    def set_matrix(self, matrix: list[list[float]] | np.ndarray) -> None:
+        arr = np.asarray(matrix, dtype=np.float32)
+        n = self.cfg.species_count
+        if arr.shape != (n, n):
+            raise ValueError("matrix shape mismatch")
+        self.matrix = arr.copy()
+
+    def matrix_values(self) -> list[list[float]]:
+        return self.matrix.astype(float).tolist()
+
     def step(self) -> None:
         cfg = self.cfg
         delta = self.positions[:, None, :] - self.positions[None, :, :]
@@ -176,6 +186,12 @@ control_index = _build_control_index()
 sim = ParticleLifeSim(SimConfig())
 
 
+def _config_values() -> dict:
+    values = asdict(sim.cfg)
+    values["interaction_matrix"] = sim.matrix_values()
+    return values
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse("src/particle_life/static/index.html")
@@ -183,7 +199,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/config")
 async def get_config() -> dict:
-    return {"sections": CONFIG_SECTIONS, "values": asdict(sim.cfg), "presets": list(PRESETS.keys())}
+    return {"sections": CONFIG_SECTIONS, "values": _config_values(), "presets": list(PRESETS.keys())}
 
 
 @app.post("/api/config/update")
@@ -191,6 +207,9 @@ async def update_config(payload: ConfigUpdate) -> dict:
     values = asdict(sim.cfg)
     needs_reset = False
     for key, value in payload.updates.items():
+        if key == "interaction_matrix":
+            sim.set_matrix(value)
+            continue
         control = control_index.get(key)
         if not control:
             continue
@@ -202,7 +221,7 @@ async def update_config(payload: ConfigUpdate) -> dict:
     if needs_reset:
         sim.rng = np.random.default_rng(sim.cfg.seed)
         sim.reset_state(random_matrix=False)
-    return {"values": asdict(sim.cfg), "reset_applied": needs_reset}
+    return {"values": _config_values(), "reset_applied": needs_reset}
 
 
 @app.post("/api/config/reset")
@@ -210,7 +229,7 @@ async def reset_config() -> dict:
     sim.cfg = SimConfig(**_defaults())
     sim.rng = np.random.default_rng(sim.cfg.seed)
     sim.reset_state(random_matrix=True)
-    return {"values": asdict(sim.cfg)}
+    return {"values": _config_values()}
 
 
 @app.post("/api/config/randomize")
@@ -218,19 +237,19 @@ async def randomize_seed() -> dict:
     sim.cfg.seed = int(np.random.randint(0, 2**31 - 1))
     sim.rng = np.random.default_rng(sim.cfg.seed)
     sim.reset_state(random_matrix=True)
-    return {"values": asdict(sim.cfg)}
+    return {"values": _config_values()}
 
 
 @app.post("/api/config/preset")
 async def load_preset(payload: PresetLoad) -> dict:
     if payload.name not in PRESETS:
-        return {"values": asdict(sim.cfg), "error": "unknown preset"}
+        return {"values": _config_values(), "error": "unknown preset"}
     values = _defaults()
     values.update(PRESETS[payload.name])
     sim.cfg = SimConfig(**values)
     sim.rng = np.random.default_rng(sim.cfg.seed)
     sim.reset_state(random_matrix=True)
-    return {"values": asdict(sim.cfg)}
+    return {"values": _config_values()}
 
 
 @app.websocket("/ws")
