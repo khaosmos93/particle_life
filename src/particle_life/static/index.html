@@ -5,45 +5,118 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Particle Life</title>
     <style>
-      html, body { margin: 0; width: 100%; height: 100%; background: #040611; color: #e6edff; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
-      canvas { display: block; width: 100vw; height: 100vh; }
-      #panel {
-        position: fixed; top: 12px; left: 12px; z-index: 10; width: min(380px, calc(100vw - 24px));
-        max-height: calc(100vh - 24px); overflow: auto; padding: 10px; border-radius: 10px;
-        background: rgba(0,0,0,0.5); backdrop-filter: blur(6px);
+      :root {
+        --panel-bg: rgba(17, 20, 29, 0.9);
+        --panel-border: #2b3446;
+        --soft: #8e9bb7;
+        --text: #dce5fa;
+        --title: #f3f6ff;
       }
-      .row { display:flex; gap:8px; margin-bottom: 8px; }
-      button, select, input { background:#1b2232; color:#fff; border:1px solid #37445d; border-radius:6px; padding:6px 8px; }
-      .section { margin: 10px 0; border-top: 1px solid #344; padding-top: 8px; }
-      .section h3 { margin: 0; font-size: 14px; }
-      .section-header { cursor: pointer; user-select: none; display:flex; align-items:center; justify-content:space-between; }
-      .section-header::after { content: "▾"; opacity: 0.8; }
-      .section-header[data-collapsed="true"]::after { content: "▸"; }
-      .section-body { margin-top: 8px; }
-      .matrix-grid { display: grid; gap: 4px; }
-      .matrix-cell { width: 100%; padding: 4px 6px; font-size: 12px; }
-      label { display:flex; align-items:center; gap:8px; justify-content: space-between; font-size: 13px; margin: 6px 0; }
-      label .left { flex: 1; }
-      label .ctrl { width: 150px; }
-      label .val { width: 56px; text-align:right; font-variant-numeric: tabular-nums; }
-      #hud { position: fixed; right: 12px; top: 12px; z-index: 9; background: rgba(0,0,0,0.45); border-radius: 8px; padding: 6px 10px; }
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: Inter, Segoe UI, system-ui, sans-serif;
+        background: #030612;
+        color: var(--text);
+      }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #menu-bar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        height: 28px;
+        width: 360px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 0 12px;
+        border-right: 1px solid var(--panel-border);
+        border-bottom: 1px solid var(--panel-border);
+        background: #111826;
+        color: #b9c5dd;
+        font-size: 12px;
+      }
+      #panel {
+        position: fixed;
+        left: 0;
+        top: 28px;
+        z-index: 20;
+        width: 360px;
+        height: calc(100vh - 28px);
+        overflow: auto;
+        box-sizing: border-box;
+        padding: 10px;
+        background: var(--panel-bg);
+        border-right: 1px solid var(--panel-border);
+      }
+      .section {
+        margin-bottom: 10px;
+        border: 1px solid #2a3242;
+        background: rgba(9, 12, 18, 0.65);
+      }
+      .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 8px;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--title);
+        cursor: pointer;
+        user-select: none;
+        border-bottom: 1px solid #273043;
+      }
+      .section-header[data-collapsed="true"] { border-bottom: none; }
+      .section-body { padding: 8px; }
+      .collapse-chevron { color: #93a6c8; font-size: 11px; }
+      .field { margin: 4px 0; }
+      .field-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+      .field-row label { flex: 1; color: #d1dbf0; }
+      .field-row .value { width: 56px; text-align: right; color: #9dafcd; font-variant-numeric: tabular-nums; }
+      .field-row .apply-tag { width: 45px; color: #7d8cac; font-size: 10px; text-transform: uppercase; text-align: right; }
+      input[type="range"] { width: 132px; }
+      input, select, button, textarea {
+        background: #141b29;
+        color: #ecf2ff;
+        border: 1px solid #36435b;
+        border-radius: 4px;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+      input, select, textarea { padding: 3px 6px; }
+      button { padding: 4px 8px; cursor: pointer; }
+      .stats-line { display: flex; justify-content: space-between; font-size: 12px; margin: 2px 0; }
+      .matrix-grid {
+        display: grid;
+        gap: 2px;
+        user-select: none;
+      }
+      .matrix-cell {
+        width: 24px;
+        height: 22px;
+        border: 1px solid #223;
+        border-radius: 2px;
+        cursor: ns-resize;
+      }
+      .matrix-axis-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.45);
+        justify-self: center;
+        align-self: center;
+      }
+      .matrix-toolbar, .row { display: flex; gap: 6px; margin-bottom: 6px; }
+      .matrix-toolbar select, .matrix-toolbar button { flex: 1; }
+      .mini { font-size: 11px; color: var(--soft); margin-bottom: 5px; }
     </style>
   </head>
   <body>
-    <div id="panel">
-      <div class="row">
-        <button id="resetBtn">Reset</button>
-        <button id="randomBtn">Randomize</button>
-      </div>
-      <div class="row">
-        <label style="width:100%">Preset
-          <select id="presetSelect" class="ctrl"></select>
-        </label>
-        <button id="applyPresetBtn">Apply</button>
-      </div>
-      <div id="sections"></div>
-    </div>
-    <div id="hud">Particle Life · Python backend + WebGL UI</div>
+    <div id="menu-bar">File <span>View</span> <span>Help</span></div>
+    <div id="panel"></div>
     <canvas id="canvas"></canvas>
     <script type="module" src="/static/main.js"></script>
   </body>
