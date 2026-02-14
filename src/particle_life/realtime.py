@@ -106,11 +106,7 @@ class ParticleLifeSim:
             np.fill_diagonal(self.matrix, self.rng.uniform(0.2, 1.0, cfg.species_count))
 
     def set_matrix(self, matrix: list[list[float]] | np.ndarray) -> None:
-        arr = np.asarray(matrix, dtype=np.float32)
-        n = self.cfg.species_count
-        if arr.shape != (n, n):
-            raise ValueError("matrix shape mismatch")
-        self.matrix = arr.copy()
+        self.matrix = _sanitize_matrix(matrix, self.cfg.species_count).copy()
 
     def matrix_values(self) -> list[list[float]]:
         return self.matrix.astype(float).tolist()
@@ -167,9 +163,12 @@ def _cast_control_value(control: dict, value):
     if control["type"] == "toggle":
         return bool(value)
     if control["type"] in {"range", "number"}:
+        numeric = float(value)
+        if not np.isfinite(numeric):
+            numeric = float(control.get("default", 0))
         if isinstance(control.get("step"), int) or float(control.get("step", 0)).is_integer():
-            return int(value)
-        return float(value)
+            return int(_clamp_numeric(control, int(numeric)))
+        return float(_clamp_numeric(control, numeric))
     if control["type"] == "select":
         v = str(value)
         return v if v in control["options"] else control["default"]
@@ -178,6 +177,26 @@ def _cast_control_value(control: dict, value):
 
 def _build_control_index() -> dict[str, dict]:
     return {c["key"]: c for section in CONFIG_SECTIONS for c in section["controls"]}
+
+
+def _clamp_numeric(control: dict, value: float | int):
+    low = control.get("min")
+    high = control.get("max")
+    out = value
+    if low is not None:
+        out = max(low, out)
+    if high is not None:
+        out = min(high, out)
+    return out
+
+
+def _sanitize_matrix(matrix, species_count: int) -> np.ndarray:
+    arr = np.asarray(matrix, dtype=np.float32)
+    if arr.shape != (species_count, species_count):
+        raise ValueError("matrix shape mismatch")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("matrix has non-finite values")
+    return np.clip(arr, -1.0, 1.0).astype(np.float32)
 
 
 app = FastAPI(title="Particle Life")
@@ -205,22 +224,27 @@ async def get_config() -> dict:
 @app.post("/api/config/update")
 async def update_config(payload: ConfigUpdate) -> dict:
     values = asdict(sim.cfg)
+    next_matrix: np.ndarray | None = None
     needs_reset = False
+
     for key, value in payload.updates.items():
-        if key == "interaction_matrix":
-            sim.set_matrix(value)
-            continue
         control = control_index.get(key)
-        if not control:
-            continue
-        values[key] = _cast_control_value(control, value)
-        if control.get("apply") == "reset":
-            needs_reset = True
+        if control:
+            values[key] = _cast_control_value(control, value)
+            if control.get("apply") == "reset":
+                needs_reset = True
+
+    next_species_count = int(values["species_count"])
+    if "interaction_matrix" in payload.updates:
+        next_matrix = _sanitize_matrix(payload.updates["interaction_matrix"], next_species_count)
 
     sim.cfg = SimConfig(**values)
     if needs_reset:
         sim.rng = np.random.default_rng(sim.cfg.seed)
         sim.reset_state(random_matrix=False)
+    if next_matrix is not None:
+        sim.set_matrix(next_matrix)
+
     return {"values": _config_values(), "reset_applied": needs_reset}
 
 

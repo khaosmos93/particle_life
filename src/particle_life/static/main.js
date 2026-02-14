@@ -4,24 +4,20 @@ const gl = canvas.getContext("webgl");
 if (!gl) throw new Error("WebGL unavailable");
 
 const TYPE_COLORS = ["#ff6f5f", "#56c3ff", "#7aff63", "#ffe26a", "#d086ff", "#ffa04d", "#60ffd0", "#c8dbff", "#ff73b8", "#88ff9e", "#6f8bff", "#ffc56f"];
+const DEV_MODE = new URLSearchParams(window.location.search).has("dev");
 
-const uiState = {
+/** @typedef {{sections: Array<object>, presets: string[], values: Record<string, any>}} SimulationParams */
+
+const appState = {
+  sections: [],
+  presets: [],
+  values: {},
+  matrixDraft: null,
   sectionCollapsed: new Map(),
-  extras: {
-    pause: false,
-    accelerator: "CPU",
-    threads: 1,
-    fixed_step: false,
-    clear_screen: true,
-    shader: "default",
-    palette: "species",
-    matrixPreset: "fully_random",
-    positionsPreset: "random",
-    typesPreset: "equal",
-  },
+  paused: false,
+  subscribers: new Set(),
 };
 
-let configValues = null;
 let pointCount = 0;
 let positions = new Float32Array();
 let species = new Float32Array();
@@ -29,13 +25,7 @@ let velocities = new Float32Array();
 let matrixGrid;
 let statsNodes = {};
 
-const perf = {
-  gfxFrames: 0,
-  physicsFrames: 0,
-  lastStamp: performance.now(),
-  gfxFps: 0,
-  physicsFps: 0,
-};
+const perf = { gfxFrames: 0, physicsFrames: 0, lastStamp: performance.now(), gfxFps: 0, physicsFps: 0 };
 
 const vertexSrc = `
 attribute vec2 a_pos;
@@ -114,12 +104,31 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-function valueText(v) {
-  return Number.isInteger(v) ? String(v) : Number(v).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+function notify() { appState.subscribers.forEach((fn) => fn(appState)); }
+function setRemoteState(next) {
+  appState.sections = next.sections || appState.sections;
+  appState.presets = next.presets || appState.presets;
+  appState.values = next.values;
+  appState.matrixDraft = next.values.interaction_matrix.map((r) => r.map((v) => Number(v)));
+  validateParams();
+  notify();
 }
 
-function clampMatrixValue(value) {
-  return Math.max(-1, Math.min(1, Number(value)));
+function valueText(v) {
+  const n = Number(v);
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function clampMatrixValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-1, Math.min(1, n));
+}
+
+function matrixColor(v) {
+  const val = clampMatrixValue(v);
+  const intensity = Math.floor(Math.abs(val) * 180) + 35;
+  return val >= 0 ? `rgb(${30}, ${intensity}, ${35})` : `rgb(${intensity}, ${32}, ${32})`;
 }
 
 async function postJSON(path, body = {}) {
@@ -127,11 +136,16 @@ async function postJSON(path, body = {}) {
   return r.json();
 }
 
-async function applyUpdate(key, value) {
-  if (!configValues) return;
-  const result = await postJSON("/api/config/update", { updates: { [key]: value } });
-  configValues = result.values;
-  syncUI();
+async function applyUpdates(updates) {
+  const result = await postJSON("/api/config/update", { updates });
+  setRemoteState({ values: result.values });
+}
+
+async function applyControlValue(key, raw, control) {
+  let value = raw;
+  if (control.type === "range" || control.type === "number") value = Number(raw);
+  if (control.type === "toggle") value = Boolean(raw);
+  await applyUpdates({ [key]: value });
 }
 
 function createSection(title, bodyBuilder) {
@@ -144,11 +158,12 @@ function createSection(title, bodyBuilder) {
   chevron.className = "collapse-chevron";
   chevron.textContent = "▾";
   header.append(title, chevron);
+
   const body = document.createElement("div");
   body.className = "section-body";
   bodyBuilder(body);
 
-  const collapsed = uiState.sectionCollapsed.get(key) ?? false;
+  const collapsed = appState.sectionCollapsed.get(key) ?? false;
   if (collapsed) {
     header.dataset.collapsed = "true";
     body.style.display = "none";
@@ -156,114 +171,81 @@ function createSection(title, bodyBuilder) {
   }
   header.addEventListener("click", () => {
     const nowCollapsed = body.style.display !== "none";
-    uiState.sectionCollapsed.set(key, nowCollapsed);
+    appState.sectionCollapsed.set(key, nowCollapsed);
     body.style.display = nowCollapsed ? "none" : "block";
     header.dataset.collapsed = nowCollapsed ? "true" : "false";
     chevron.textContent = nowCollapsed ? "▸" : "▾";
   });
-
   section.append(header, body);
   panel.appendChild(section);
 }
 
-function bindRange(parent, cfg) {
-  const wrap = document.createElement("div");
-  wrap.className = "field";
+function bindControl(parent, control) {
   const row = document.createElement("div");
   row.className = "field-row";
   const label = document.createElement("label");
-  label.textContent = cfg.label;
-  const input = document.createElement("input");
-  input.type = "range";
-  input.min = cfg.min;
-  input.max = cfg.max;
-  input.step = cfg.step;
-  input.value = configValues[cfg.key] ?? cfg.default;
-  const value = document.createElement("span");
-  value.className = "value";
-  value.textContent = valueText(input.value);
-  const applyTag = document.createElement("span");
-  applyTag.className = "apply-tag";
-  applyTag.textContent = cfg.apply || "";
-  input.addEventListener("input", () => {
-    value.textContent = valueText(input.value);
-  });
-  input.addEventListener("change", () => applyUpdate(cfg.key, Number(input.value)));
-  row.append(label, input, value, applyTag);
-  wrap.appendChild(row);
-  parent.appendChild(wrap);
-}
+  label.textContent = control.label;
+  row.appendChild(label);
 
-function bindSelect(parent, cfg) {
-  const row = document.createElement("div");
-  row.className = "field-row";
-  const label = document.createElement("label");
-  label.textContent = cfg.label;
-  const select = document.createElement("select");
-  cfg.options.forEach((opt) => {
-    const o = document.createElement("option");
-    o.value = opt;
-    o.textContent = opt;
-    select.appendChild(o);
-  });
-  select.value = String(configValues[cfg.key] ?? cfg.default);
-  const value = document.createElement("span");
-  value.className = "value";
-  value.textContent = select.value;
+  const valueNode = document.createElement("span");
+  valueNode.className = "value";
   const applyTag = document.createElement("span");
   applyTag.className = "apply-tag";
-  applyTag.textContent = cfg.apply || "";
-  select.addEventListener("change", () => {
-    value.textContent = select.value;
-    applyUpdate(cfg.key, select.value);
-  });
-  row.append(label, select, value, applyTag);
+  applyTag.textContent = control.apply || "";
+
+  if (control.type === "range") {
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = control.min;
+    input.max = control.max;
+    input.step = control.step;
+    input.value = appState.values[control.key] ?? control.default;
+    valueNode.textContent = valueText(input.value);
+    input.addEventListener("input", () => { valueNode.textContent = valueText(input.value); });
+    input.addEventListener("change", () => applyControlValue(control.key, input.value, control));
+    row.appendChild(input);
+  } else if (control.type === "select") {
+    const select = document.createElement("select");
+    control.options.forEach((opt) => {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      select.appendChild(o);
+    });
+    select.value = String(appState.values[control.key] ?? control.default);
+    valueNode.textContent = select.value;
+    select.addEventListener("change", () => {
+      valueNode.textContent = select.value;
+      applyControlValue(control.key, select.value, control);
+    });
+    row.appendChild(select);
+  } else if (control.type === "toggle") {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(appState.values[control.key] ?? control.default);
+    valueNode.textContent = input.checked ? "on" : "off";
+    input.addEventListener("change", () => {
+      valueNode.textContent = input.checked ? "on" : "off";
+      applyControlValue(control.key, input.checked, control);
+    });
+    row.appendChild(input);
+  } else if (control.type === "number") {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = control.min;
+    input.max = control.max;
+    input.step = control.step;
+    input.value = String(appState.values[control.key] ?? control.default);
+    valueNode.textContent = input.value;
+    input.addEventListener("change", () => {
+      valueNode.textContent = input.value;
+      applyControlValue(control.key, input.value, control);
+    });
+    row.appendChild(input);
+  }
+
+  row.append(valueNode, applyTag);
   parent.appendChild(row);
-}
-
-function bindToggle(parent, cfg) {
-  const row = document.createElement("div");
-  row.className = "field-row";
-  const label = document.createElement("label");
-  label.textContent = cfg.label;
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.checked = Boolean(configValues[cfg.key] ?? cfg.default);
-  const value = document.createElement("span");
-  value.className = "value";
-  value.textContent = input.checked ? "on" : "off";
-  const applyTag = document.createElement("span");
-  applyTag.className = "apply-tag";
-  applyTag.textContent = cfg.apply || "";
-  input.addEventListener("change", () => {
-    value.textContent = input.checked ? "on" : "off";
-    applyUpdate(cfg.key, input.checked);
-  });
-  row.append(label, input, value, applyTag);
-  parent.appendChild(row);
-}
-
-function createControl(parent, cfg) {
-  if (cfg.type === "range") bindRange(parent, cfg);
-  if (cfg.type === "select") bindSelect(parent, cfg);
-  if (cfg.type === "toggle") bindToggle(parent, cfg);
-}
-
-function matrixColor(v) {
-  const val = clampMatrixValue(v);
-  const intensity = Math.floor(Math.abs(val) * 180) + 35;
-  if (val >= 0) return `rgb(${30}, ${intensity}, ${35})`;
-  return `rgb(${intensity}, ${32}, ${32})`;
-}
-
-async function pushMatrix(next) {
-  const result = await postJSON("/api/config/update", { updates: { interaction_matrix: next } });
-  configValues = result.values;
-  syncMatrix();
-}
-
-function cloneMatrix() {
-  return configValues.interaction_matrix.map((row) => row.map((v) => Number(v)));
 }
 
 function buildMatrixEditor(parent) {
@@ -271,52 +253,42 @@ function buildMatrixEditor(parent) {
   toolbar.className = "matrix-toolbar";
 
   const presetSelect = document.createElement("select");
-  [
-    ["fully_random", "fully random"],
-    ["zero", "all zeros"],
-    ["identity", "identity +"],
-    ["symmetric_random", "symmetric random"],
-  ].forEach(([value, label]) => {
+  [["fully_random", "fully random"], ["zero", "all zeros"], ["identity", "identity +"], ["symmetric_random", "symmetric random"]].forEach(([value, label]) => {
     const o = document.createElement("option");
     o.value = value;
     o.textContent = label;
     presetSelect.appendChild(o);
   });
-  presetSelect.value = uiState.extras.matrixPreset;
 
   const presetApply = document.createElement("button");
-  presetApply.textContent = "Apply";
-  presetApply.addEventListener("click", async () => {
-    const matrix = cloneMatrix();
+  presetApply.textContent = "Apply preset";
+  presetApply.addEventListener("click", () => {
+    const matrix = appState.matrixDraft.map((r) => [...r]);
     const n = matrix.length;
-    if (presetSelect.value === "fully_random") {
-      for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = -1 + Math.random() * 2;
-    }
-    if (presetSelect.value === "zero") {
-      for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = 0;
-    }
-    if (presetSelect.value === "identity") {
-      for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = i === j ? 1 : 0;
-    }
+    if (presetSelect.value === "fully_random") for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = -1 + Math.random() * 2;
+    if (presetSelect.value === "zero") for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = 0;
+    if (presetSelect.value === "identity") for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) matrix[i][j] = i === j ? 1 : 0;
     if (presetSelect.value === "symmetric_random") {
-      for (let i = 0; i < n; i += 1) {
-        for (let j = i; j < n; j += 1) {
-          const value = -1 + Math.random() * 2;
-          matrix[i][j] = value;
-          matrix[j][i] = value;
-        }
-      }
+      for (let i = 0; i < n; i += 1) for (let j = i; j < n; j += 1) { const value = -1 + Math.random() * 2; matrix[i][j] = value; matrix[j][i] = value; }
     }
-    await pushMatrix(matrix);
+    appState.matrixDraft = matrix.map((r) => r.map(clampMatrixValue));
+    syncMatrix();
   });
-  toolbar.append(presetSelect, presetApply);
+
+  const applyBtn = document.createElement("button");
+  applyBtn.textContent = "Commit matrix";
+  applyBtn.addEventListener("click", async () => {
+    await applyUpdates({ interaction_matrix: appState.matrixDraft });
+  });
+
+  toolbar.append(presetSelect, presetApply, applyBtn);
 
   const clipboardRow = document.createElement("div");
   clipboardRow.className = "row";
   const copyBtn = document.createElement("button");
   copyBtn.textContent = "Copy";
   copyBtn.addEventListener("click", async () => {
-    const text = configValues.interaction_matrix.map((r) => r.map((v) => Number(v).toFixed(4)).join(" ")).join("\n");
+    const text = appState.matrixDraft.map((r) => r.map((v) => Number(v).toFixed(4)).join(" ")).join("\n");
     await navigator.clipboard.writeText(text);
   });
   const pasteBtn = document.createElement("button");
@@ -324,43 +296,32 @@ function buildMatrixEditor(parent) {
   pasteBtn.addEventListener("click", async () => {
     const text = await navigator.clipboard.readText();
     const rows = text.trim().split(/\n+/).map((line) => line.trim().split(/[\s,;]+/).map(Number));
-    const n = configValues.interaction_matrix.length;
-    if (rows.length !== n || rows.some((r) => r.length !== n || r.some((v) => Number.isNaN(v)))) return;
-    await pushMatrix(rows.map((r) => r.map((v) => clampMatrixValue(v))));
+    const n = appState.values.interaction_matrix.length;
+    if (rows.length !== n || rows.some((r) => r.length !== n || r.some((v) => !Number.isFinite(v)))) return;
+    appState.matrixDraft = rows.map((r) => r.map(clampMatrixValue));
+    syncMatrix();
   });
   clipboardRow.append(copyBtn, pasteBtn);
 
   matrixGrid = document.createElement("div");
   matrixGrid.className = "matrix-grid";
-
   parent.append(toolbar, clipboardRow, matrixGrid);
 }
 
 function syncMatrix() {
-  if (!matrixGrid || !configValues?.interaction_matrix) return;
-  const matrix = configValues.interaction_matrix;
+  if (!matrixGrid || !appState.matrixDraft) return;
+  const matrix = appState.matrixDraft;
   const n = matrix.length;
   matrixGrid.innerHTML = "";
-  matrixGrid.style.gridTemplateColumns = `16px repeat(${n}, 24px)`;
+  matrixGrid.style.gridTemplateColumns = `16px repeat(${n}, minmax(38px, 1fr))`;
 
-  const corner = document.createElement("div");
-  matrixGrid.appendChild(corner);
+  matrixGrid.appendChild(document.createElement("div"));
   for (let c = 0; c < n; c += 1) {
     const dot = document.createElement("div");
     dot.className = "matrix-axis-dot";
     dot.style.background = TYPE_COLORS[c % TYPE_COLORS.length];
     matrixGrid.appendChild(dot);
   }
-
-  let dragging = null;
-  const applyDelta = (event, i, j) => {
-    if (!dragging) return;
-    const matrixNext = cloneMatrix();
-    const delta = ((dragging.startY - event.clientY) + (event.clientX - dragging.startX)) * 0.004;
-    matrixNext[i][j] = clampMatrixValue(dragging.startValue + delta);
-    configValues.interaction_matrix = matrixNext;
-    syncMatrix();
-  };
 
   for (let i = 0; i < n; i += 1) {
     const rowDot = document.createElement("div");
@@ -369,157 +330,109 @@ function syncMatrix() {
     matrixGrid.appendChild(rowDot);
 
     for (let j = 0; j < n; j += 1) {
-      const cell = document.createElement("div");
-      const value = Number(matrix[i][j]);
-      cell.className = "matrix-cell";
-      cell.style.background = matrixColor(value);
-      cell.title = `${i} → ${j}: ${value.toFixed(3)}`;
-      cell.addEventListener("mousedown", (event) => {
-        if (event.button !== 0) return;
-        dragging = { i, j, startY: event.clientY, startX: event.clientX, startValue: value };
-        const onMove = (moveEvent) => applyDelta(moveEvent, i, j);
-        const onUp = async () => {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = "matrix-cell";
+      input.step = "0.01";
+      input.min = "-1";
+      input.max = "1";
+      input.value = matrix[i][j].toFixed(3);
+      input.style.background = matrixColor(matrix[i][j]);
+      input.title = `${i} → ${j}`;
+      input.addEventListener("change", () => {
+        appState.matrixDraft[i][j] = clampMatrixValue(input.value);
+        syncMatrix();
+      });
+
+      input.addEventListener("mousedown", (event) => {
+        if (event.button !== 0 || event.shiftKey) return;
+        const startY = event.clientY;
+        const startX = event.clientX;
+        const startValue = appState.matrixDraft[i][j];
+        const onMove = (moveEvent) => {
+          const delta = ((startY - moveEvent.clientY) + (moveEvent.clientX - startX)) * 0.004;
+          appState.matrixDraft[i][j] = clampMatrixValue(startValue + delta);
+          input.value = appState.matrixDraft[i][j].toFixed(3);
+          input.style.background = matrixColor(appState.matrixDraft[i][j]);
+        };
+        const onUp = () => {
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
-          const latest = cloneMatrix();
-          dragging = null;
-          await pushMatrix(latest);
         };
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp, { once: true });
       });
-      matrixGrid.appendChild(cell);
+      matrixGrid.appendChild(input);
     }
   }
 }
 
 function buildUI() {
   panel.innerHTML = "";
-  createSection("Info", (body) => {
-    const keys = ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Velocity std dev"];
-    keys.forEach((k) => {
-      const line = document.createElement("div");
-      line.className = "stats-line";
-      const name = document.createElement("span");
-      const value = document.createElement("span");
-      name.textContent = k;
-      value.textContent = "--";
-      line.append(name, value);
-      body.appendChild(line);
-      statsNodes[k] = value;
+  statsNodes = {};
+
+  if (appState.values.show_hud !== false) {
+    createSection("Info", (body) => {
+      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Velocity std dev"].forEach((k) => {
+        const line = document.createElement("div");
+        line.className = "stats-line";
+        const name = document.createElement("span");
+        const value = document.createElement("span");
+        name.textContent = k;
+        value.textContent = "--";
+        line.append(name, value);
+        body.appendChild(line);
+        statsNodes[k] = value;
+      });
     });
-  });
+  }
 
-  createSection("Particles", (body) => {
-    const list = [
-      { key: "particles_per_species", type: "range", label: "Particle count/type", min: 20, max: 400, step: 10, default: 160, apply: "reset" },
-      { key: "species_count", type: "range", label: "Types", min: 2, max: 12, step: 1, default: 6, apply: "reset" },
-    ];
-    list.forEach((cfg) => createControl(body, cfg));
+  createSection("Controls", (body) => {
+    const runRow = document.createElement("div");
+    runRow.className = "row";
+    const pauseBtn = document.createElement("button");
+    pauseBtn.textContent = appState.paused ? "Resume" : "Pause";
+    pauseBtn.addEventListener("click", () => { appState.paused = !appState.paused; buildUI(); });
+    const resetBtn = document.createElement("button");
+    resetBtn.textContent = "Reset";
+    resetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/reset")));
+    const randomizeBtn = document.createElement("button");
+    randomizeBtn.textContent = "Randomize Seed";
+    randomizeBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/randomize")));
+    runRow.append(pauseBtn, resetBtn, randomizeBtn);
+    body.append(runRow);
 
-    const eqRow = document.createElement("div");
-    eqRow.className = "field-row";
-    eqRow.innerHTML = "<label>Equalize type count</label>";
-    const eqBtn = document.createElement("button");
-    eqBtn.textContent = "Apply";
-    eqBtn.addEventListener("click", () => applyUpdate("particles_per_species", configValues.particles_per_species));
-    eqRow.appendChild(eqBtn);
-    body.appendChild(eqRow);
-  });
-
-  createSection("Interaction matrix", (body) => buildMatrixEditor(body));
-
-  createSection("Presets", (body) => {
-    const mini = document.createElement("div");
-    mini.className = "mini";
-    mini.textContent = "Matrix / positions / types";
-    body.appendChild(mini);
-    const matrixPreset = document.createElement("select");
-    ["Default", "Dense", "Sparse", "Chaotic"].forEach((name) => {
+    const presetRow = document.createElement("div");
+    presetRow.className = "row";
+    const presetSelect = document.createElement("select");
+    appState.presets.forEach((name) => {
       const o = document.createElement("option");
       o.value = name;
       o.textContent = name;
-      matrixPreset.appendChild(o);
+      presetSelect.appendChild(o);
     });
-    const applyBtn = document.createElement("button");
-    applyBtn.textContent = "Load";
-    applyBtn.addEventListener("click", async () => {
-      const response = await postJSON("/api/config/preset", { name: matrixPreset.value });
-      configValues = response.values;
-      syncUI();
-    });
-    const row = document.createElement("div");
-    row.className = "row";
-    row.append(matrixPreset, applyBtn);
-    body.appendChild(row);
-
-    const placeholders = [
-      ["positions", ["random", "ring", "uniform"]],
-      ["types", ["equal", "clusters", "random"]],
-    ];
-    placeholders.forEach(([name, options]) => {
-      const r = document.createElement("div");
-      r.className = "row";
-      const s = document.createElement("select");
-      options.forEach((opt) => {
-        const o = document.createElement("option"); o.value = opt; o.textContent = `${name}: ${opt}`; s.appendChild(o);
-      });
-      s.value = uiState.extras[`${name}Preset`];
-      s.addEventListener("change", () => {
-        uiState.extras[`${name}Preset`] = s.value;
-        applyUpdate(`${name}_preset`, s.value);
-      });
-      r.appendChild(s);
-      body.appendChild(r);
-    });
+    const presetBtn = document.createElement("button");
+    presetBtn.textContent = "Load preset";
+    presetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/preset", { name: presetSelect.value })));
+    presetRow.append(presetSelect, presetBtn);
+    body.appendChild(presetRow);
   });
 
-  createSection("Physics", (body) => {
-    [
-      { key: "dt", type: "range", label: "fixed step", min: 0.001, max: 0.06, step: 0.001, default: 0.015, apply: "immediate" },
-      { key: "interaction_radius", type: "range", label: "rmax", min: 0.02, max: 0.35, step: 0.005, default: 0.11, apply: "immediate" },
-      { key: "damping", type: "range", label: "friction", min: 0.85, max: 0.999, step: 0.001, default: 0.975, apply: "immediate" },
-      { key: "force_scale", type: "range", label: "force", min: 0.05, max: 1.2, step: 0.01, default: 0.42, apply: "immediate" },
-      { key: "boundary_mode", type: "select", label: "wrap", options: ["wrap", "bounce"], default: "wrap", apply: "immediate" },
-      { key: "steps_per_frame", type: "range", label: "accelerator", min: 1, max: 8, step: 1, default: 1, apply: "immediate" },
-    ].forEach((cfg) => createControl(body, cfg));
-
-    const pauseRow = document.createElement("div");
-    pauseRow.className = "field-row";
-    pauseRow.innerHTML = "<label>Pause</label>";
-    const pause = document.createElement("input");
-    pause.type = "checkbox";
-    pause.checked = uiState.extras.pause;
-    pause.addEventListener("change", () => { uiState.extras.pause = pause.checked; });
-    pauseRow.appendChild(pause);
-    body.appendChild(pauseRow);
-
-    const threadRow = document.createElement("div");
-    threadRow.className = "field-row";
-    threadRow.innerHTML = "<label>threads</label>";
-    const threads = document.createElement("input");
-    threads.type = "number";
-    threads.min = "1";
-    threads.max = "32";
-    threads.value = String(uiState.extras.threads);
-    threads.addEventListener("change", () => {
-      uiState.extras.threads = Number(threads.value);
-      applyUpdate("threads", uiState.extras.threads);
-    });
-    threadRow.appendChild(threads);
-    body.appendChild(threadRow);
+  appState.sections.forEach((section) => {
+    createSection(section.label, (body) => section.controls.forEach((control) => bindControl(body, control)));
   });
 
-  createSection("Graphics", (body) => {
-    [
-      { key: "point_size", type: "range", label: "particle size", min: 1, max: 8, step: 0.1, default: 3, apply: "immediate" },
-      { key: "color_mode", type: "select", label: "palette", options: ["species", "velocity", "mono"], default: "species", apply: "immediate" },
-      { key: "background_alpha", type: "range", label: "clear screen", min: 0.02, max: 1.0, step: 0.01, default: 1, apply: "immediate" },
-      { key: "pbc_tiling", type: "toggle", label: "shader: 3x3 PBC", default: false, apply: "immediate" },
-    ].forEach((cfg) => createControl(body, cfg));
-  });
-
+  createSection("Interaction Matrix", (body) => buildMatrixEditor(body));
   syncMatrix();
+}
+
+function validateParams() {
+  const n = Number(appState.values.species_count || 0);
+  const matrix = appState.values.interaction_matrix || [];
+  if (matrix.length !== n || matrix.some((row) => row.length !== n)) console.assert(false, "matrix dimensions must match species_count");
+  if (DEV_MODE) {
+    matrix.forEach((row) => row.forEach((v) => console.assert(Number.isFinite(v) && v >= -1 && v <= 1, "matrix value out of bounds", v)));
+  }
 }
 
 function drawInstances(offsetX, offsetY) {
@@ -528,7 +441,6 @@ function drawInstances(offsetX, offsetY) {
     shifted[i * 2] = positions[i * 2] + offsetX;
     shifted[i * 2 + 1] = positions[i * 2 + 1] + offsetY;
   }
-
   gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, shifted, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(aPos);
@@ -547,19 +459,19 @@ function drawInstances(offsetX, offsetY) {
 }
 
 function draw() {
-  const bg = Number(configValues?.background_alpha ?? 1.0);
-  gl.clearColor(0.02, 0.03, 0.08, uiState.extras.clear_screen ? bg : 0);
+  const bg = Number(appState.values.background_alpha ?? 1);
+  gl.clearColor(0.02, 0.03, 0.08, bg);
   gl.clear(gl.COLOR_BUFFER_BIT);
   if (!pointCount) return;
 
   gl.useProgram(program);
   gl.uniform2f(uScale, window.devicePixelRatio || 1, 1);
-  gl.uniform1f(uPointSize, Number(configValues?.point_size ?? 3));
-  gl.uniform1f(uOpacity, Number(configValues?.point_opacity ?? 0.95));
-  const mode = configValues?.color_mode === "velocity" ? 1 : configValues?.color_mode === "mono" ? 2 : 0;
+  gl.uniform1f(uPointSize, Number(appState.values.point_size ?? 3));
+  gl.uniform1f(uOpacity, Number(appState.values.point_opacity ?? 0.95));
+  const mode = appState.values.color_mode === "velocity" ? 1 : appState.values.color_mode === "mono" ? 2 : 0;
   gl.uniform1i(uColorMode, mode);
 
-  if (configValues?.pbc_tiling) {
+  if (appState.values.pbc_tiling) {
     for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) drawInstances(dx, dy);
   } else {
     drawInstances(0, 0);
@@ -567,7 +479,7 @@ function draw() {
 }
 
 function consumeFrame(buffer) {
-  if (uiState.extras.pause) return;
+  if (appState.paused) return;
   const data = new Float32Array(buffer);
   pointCount = Math.floor(data.length / 5);
   positions = new Float32Array(pointCount * 2);
@@ -605,7 +517,7 @@ function updateStats() {
       statsNodes["Physics FPS"].textContent = perf.physicsFps.toFixed(1);
       statsNodes["Speed ratio"].textContent = (perf.physicsFps / Math.max(perf.gfxFps, 0.1)).toFixed(2);
       statsNodes["Particles"].textContent = String(pointCount);
-      statsNodes["Types"].textContent = String(configValues?.species_count ?? "--");
+      statsNodes["Types"].textContent = String(appState.values.species_count ?? "--");
       statsNodes["Velocity std dev"].textContent = velocityStdDev().toFixed(4);
     }
   }
@@ -617,33 +529,11 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-function syncUI() {
-  buildUI();
-}
-
 async function init() {
-  try {
-    const res = await fetch("/api/config");
-    const data = await res.json();
-    configValues = data.values;
-  } catch (_error) {
-    configValues = {
-      species_count: 6,
-      particles_per_species: 160,
-      interaction_radius: 0.11,
-      damping: 0.975,
-      force_scale: 0.42,
-      dt: 0.015,
-      boundary_mode: "wrap",
-      steps_per_frame: 1,
-      point_size: 3,
-      point_opacity: 0.95,
-      background_alpha: 1,
-      pbc_tiling: false,
-      color_mode: "species",
-      interaction_matrix: Array.from({ length: 6 }, (_, i) => Array.from({ length: 6 }, (_, j) => (i === j ? 1 : 0))),
-    };
-  }
+  const res = await fetch("/api/config");
+  const data = await res.json();
+  setRemoteState(data);
+  appState.subscribers.add(() => buildUI());
   buildUI();
   animate();
 }
