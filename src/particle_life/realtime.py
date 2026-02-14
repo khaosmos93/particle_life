@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 import uvicorn
@@ -81,7 +82,7 @@ PRESETS = {
 
 
 class ConfigUpdate(BaseModel):
-    updates: dict[str, float | int | bool | str]
+    updates: dict[str, Any]
 
 
 class PresetLoad(BaseModel):
@@ -216,6 +217,7 @@ sim = ParticleLifeSim(SimConfig())
 def _config_values() -> dict:
     values = asdict(sim.cfg)
     values["interaction_matrix"] = sim.matrix_values()
+    values["matrix_version"] = sim.matrix_version
     return values
 
 

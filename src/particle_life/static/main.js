@@ -291,38 +291,11 @@ function buildMatrixEditor(parent) {
     scheduleMatrixCommit();
   });
 
-  const applyBtn = document.createElement("button");
-  applyBtn.textContent = "Commit matrix";
-  applyBtn.addEventListener("click", async () => {
-    await applyUpdates({ interaction_matrix: appState.matrixDraft });
-  });
-
-  toolbar.append(presetSelect, presetApply, applyBtn);
-
-  const clipboardRow = document.createElement("div");
-  clipboardRow.className = "row";
-  const copyBtn = document.createElement("button");
-  copyBtn.textContent = "Copy";
-  copyBtn.addEventListener("click", async () => {
-    const text = appState.matrixDraft.map((r) => r.map((v) => Number(v).toFixed(4)).join(" ")).join("\n");
-    await navigator.clipboard.writeText(text);
-  });
-  const pasteBtn = document.createElement("button");
-  pasteBtn.textContent = "Paste";
-  pasteBtn.addEventListener("click", async () => {
-    const text = await navigator.clipboard.readText();
-    const rows = text.trim().split(/\n+/).map((line) => line.trim().split(/[\s,;]+/).map(Number));
-    const n = appState.values.interaction_matrix.length;
-    if (rows.length !== n || rows.some((r) => r.length !== n || r.some((v) => !Number.isFinite(v)))) return;
-    appState.matrixDraft = rows.map((r) => r.map(clampMatrixValue));
-    syncMatrix();
-    scheduleMatrixCommit();
-  });
-  clipboardRow.append(copyBtn, pasteBtn);
+  toolbar.append(presetSelect, presetApply);
 
   matrixGrid = document.createElement("div");
   matrixGrid.className = "matrix-grid";
-  parent.append(toolbar, clipboardRow, matrixGrid);
+  parent.append(toolbar, matrixGrid);
 }
 
 function syncMatrix() {
@@ -356,9 +329,10 @@ function syncMatrix() {
       input.value = matrix[i][j].toFixed(3);
       input.style.background = matrixColor(matrix[i][j]);
       input.title = `${i} → ${j}`;
-      input.addEventListener("change", () => {
+      input.addEventListener("input", () => {
         appState.matrixDraft[i][j] = clampMatrixValue(input.value);
-        syncMatrix();
+        input.value = appState.matrixDraft[i][j].toFixed(3);
+        input.style.background = matrixColor(appState.matrixDraft[i][j]);
         scheduleMatrixCommit();
       });
 
@@ -372,6 +346,7 @@ function syncMatrix() {
           appState.matrixDraft[i][j] = clampMatrixValue(startValue + delta);
           input.value = appState.matrixDraft[i][j].toFixed(3);
           input.style.background = matrixColor(appState.matrixDraft[i][j]);
+          scheduleMatrixCommit();
         };
         const onUp = () => {
           window.removeEventListener("mousemove", onMove);
@@ -392,7 +367,7 @@ function buildUI() {
 
   if (appState.values.show_hud !== false) {
     createSection("Info", (body) => {
-      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Velocity std dev"].forEach((k) => {
+      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Velocity std dev", "Matrix version"].forEach((k) => {
         const line = document.createElement("div");
         line.className = "stats-line";
         const name = document.createElement("span");
@@ -537,6 +512,7 @@ function updateStats() {
       statsNodes["Particles"].textContent = String(pointCount);
       statsNodes["Types"].textContent = String(appState.values.species_count ?? "--");
       statsNodes["Velocity std dev"].textContent = velocityStdDev().toFixed(4);
+      statsNodes["Matrix version"].textContent = String(appState.values.matrix_version ?? "--");
     }
   }
 }
