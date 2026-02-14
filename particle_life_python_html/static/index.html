@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Particle Life (Python + HTML)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0f1220;
+        color: #e7ecff;
+      }
+      main {
+        max-width: 700px;
+        padding: 24px;
+        border: 1px solid #2a335f;
+        border-radius: 12px;
+        background: #161b32;
+      }
+      pre {
+        overflow: auto;
+        background: #0c1020;
+        border-radius: 8px;
+        padding: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Reference-Matched Rebuild</h1>
+      <p>
+        The reference folder <code>particle-life-app/</code> contains no implementation files,
+        so this rebuilt app mirrors that state.
+      </p>
+      <p>
+        Simulation rules: <strong>none</strong><br />
+        Parameters: <strong>none</strong><br />
+        Initial state: <strong>empty</strong>
+      </p>
+      <h2>Reference Introspection</h2>
+      <pre id="out">Loading...</pre>
+    </main>
+    <script>
+      async function loadStatus() {
+        const response = await fetch('/api/reference');
+        const data = await response.json();
+        document.getElementById('out').textContent = JSON.stringify(data, null, 2);
+      }
+      loadStatus();
+    </script>
+  </body>
+</html>
