@@ -12,7 +12,7 @@ source .venv/bin/activate
 ## Run
 
 ```bash
-python -m particle_life.realtime
+PYTHONPATH=src python -m particle_life.realtime
 ```
 
 Then open: `http://localhost:8000`
