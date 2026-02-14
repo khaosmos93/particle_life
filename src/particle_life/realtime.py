@@ -292,7 +292,12 @@ def _parse_input_json(input_json: dict[str, Any]) -> tuple[SimConfig, np.ndarray
     if input_json.get("schema_version") != 1:
         raise ValueError("schema_version must be 1")
 
-    cfg = _coerce_config(input_json.get("config", {}))
+    config_raw = input_json.get("config", {})
+    if not isinstance(config_raw, dict):
+        raise ValueError("config must be an object")
+    if "species_count" not in config_raw and "num_types" in input_json:
+        config_raw = {**config_raw, "species_count": input_json.get("num_types")}
+    cfg = _coerce_config(config_raw)
     matrix = _sanitize_matrix(input_json.get("interaction_matrix"), cfg.species_count)
     particles = input_json.get("particles")
     if not isinstance(particles, list):
@@ -346,6 +351,7 @@ def _build_input_json() -> dict[str, Any]:
         )
     return {
         "schema_version": 1,
+        "num_types": int(sim.cfg.species_count),
         "config": asdict(sim.cfg),
         "interaction_matrix": sim.matrix_values(),
         "particles": particles,
@@ -411,6 +417,7 @@ async def save_initial_condition(payload: InitialConditionSave) -> dict:
         cfg, matrix, positions, velocities, species = _parse_input_json(payload.input_json)
         normalized = {
             "schema_version": 1,
+            "num_types": int(cfg.species_count),
             "config": asdict(cfg),
             "interaction_matrix": matrix.astype(float).tolist(),
             "particles": [

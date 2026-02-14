@@ -14,17 +14,22 @@
       input,select { flex:1; }
       label { font-size:12px; color:#9cafcd; min-width:92px; }
       .hint { font-size:11px; color:#93a1bf; margin:8px 0; }
+      #matrix { display:grid; gap:4px; margin:8px 0; }
+      #matrix input { min-width:0; text-align:center; padding:2px 4px; font-size:11px; }
     </style>
   </head>
   <body>
     <div id="side">
       <h3 style="margin:0 0 10px 0">Initial Condition Editor</h3>
       <div class="row"><label>Preset name</label><input id="name" value="custom_preset.json" /></div>
+      <div class="row"><label>Number of Types</label><input id="numTypes" type="number" min="1" max="64" step="1" value="6" /></div>
       <div class="row"><label>Paint type</label><select id="type"></select></div>
       <div class="row"><label>Brush radius</label><input id="radius" type="number" min="0.005" max="0.4" step="0.005" value="0.05" /></div>
-      <div class="row"><label>Per stroke</label><input id="density" type="number" min="1" max="500" step="1" value="24" /></div>
+      <div class="row"><label>Per stroke</label><input id="density" type="number" min="1" max="500" step="1" value="1" /></div>
       <div class="row"><label>Jitter</label><input id="jitter" type="number" min="0" max="1" step="0.01" value="0.45" /></div>
       <div class="row"><label>Speed jitter</label><input id="speed" type="number" min="0" max="0.2" step="0.001" value="0.01" /></div>
+      <label style="display:block; margin-top:10px; min-width:0">Interaction matrix</label>
+      <div id="matrix"></div>
       <div class="row"><button id="clear" style="flex:1">Clear particles</button><button id="save" style="flex:1">Save JSON</button></div>
       <div class="row"><button id="download" style="flex:1">Download JSON</button></div>
       <div class="hint">Click and drag to paint particles. This saves a full deterministic simulation input JSON.</div>

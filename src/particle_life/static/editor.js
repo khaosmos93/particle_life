@@ -2,6 +2,9 @@ const canvas = document.getElementById('world');
 const ctx = canvas.getContext('2d');
 const statusNode = document.getElementById('status');
 const typeSelect = document.getElementById('type');
+const numTypesInput = document.getElementById('numTypes');
+const matrixNode = document.getElementById('matrix');
+const densityInput = document.getElementById('density');
 const nameInput = document.getElementById('name');
 
 let cfg = null;
@@ -32,9 +35,63 @@ function toWorld(event) {
   return [x * cfg.world_size, y * cfg.world_size];
 }
 
+function resizeMatrix(nextTypes) {
+  const n = Math.max(1, nextTypes | 0);
+  const next = Array.from({ length: n }, (_, r) => Array.from({ length: n }, (_, c) => {
+    if (Array.isArray(matrix) && Array.isArray(matrix[r]) && Number.isFinite(Number(matrix[r][c]))) return Number(matrix[r][c]);
+    return r === c ? 1 : 0;
+  }));
+  matrix = next;
+}
+
+function renderTypeSelector() {
+  const selected = Number(typeSelect.value) || 0;
+  typeSelect.innerHTML = '';
+  for (let i = 0; i < cfg.species_count; i += 1) {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = `Type ${i + 1}`;
+    typeSelect.appendChild(o);
+  }
+  typeSelect.value = String(Math.max(0, Math.min(selected, cfg.species_count - 1)));
+}
+
+function renderMatrixEditor() {
+  matrixNode.innerHTML = '';
+  const n = cfg.species_count;
+  matrixNode.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`;
+  for (let r = 0; r < n; r += 1) {
+    for (let c = 0; c < n; c += 1) {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '-1';
+      input.max = '1';
+      input.step = '0.01';
+      input.value = String(Number(matrix[r][c] ?? 0));
+      input.addEventListener('change', () => {
+        const v = Math.max(-1, Math.min(1, Number(input.value)));
+        matrix[r][c] = Number.isFinite(v) ? v : 0;
+        input.value = String(matrix[r][c]);
+      });
+      matrixNode.appendChild(input);
+    }
+  }
+}
+
+function setSpeciesCount(nextTypes) {
+  const n = Math.max(1, Math.min(64, Number(nextTypes) | 0));
+  cfg.species_count = n;
+  numTypesInput.value = String(n);
+  resizeMatrix(n);
+  particles = particles.filter((p) => p.type >= 0 && p.type < n);
+  renderTypeSelector();
+  renderMatrixEditor();
+  draw();
+}
+
 function addStroke(cx, cy) {
   const radius = Math.max(0.001, Number(document.getElementById('radius').value));
-  const density = Math.max(1, Number(document.getElementById('density').value) | 0);
+  const density = Math.max(1, Number(densityInput.value) | 0);
   const jitter = Math.max(0, Number(document.getElementById('jitter').value));
   const speed = Math.max(0, Number(document.getElementById('speed').value));
   const type = Number(typeSelect.value) | 0;
@@ -72,7 +129,8 @@ function buildInputJson() {
   for (const p of particles) counts[p.type] += 1;
   return {
     schema_version: 1,
-    config: { ...cfg, particle_counts: counts },
+    num_types: cfg.species_count,
+    config: { ...cfg, species_count: cfg.species_count, particle_counts: counts },
     interaction_matrix: matrix,
     particles,
   };
@@ -101,12 +159,8 @@ async function init() {
   const data = await r.json();
   cfg = data.values;
   matrix = data.values.interaction_matrix;
-  for (let i = 0; i < cfg.species_count; i += 1) {
-    const o = document.createElement('option');
-    o.value = String(i);
-    o.textContent = `Type ${i + 1}`;
-    typeSelect.appendChild(o);
-  }
+  densityInput.value = '1';
+  setSpeciesCount(cfg.species_count);
   resize();
 }
 
@@ -114,6 +168,7 @@ canvas.addEventListener('mousedown', (e) => { drawing = true; const [x,y] = toWo
 canvas.addEventListener('mousemove', (e) => { if (!drawing) return; const [x,y] = toWorld(e); addStroke(x,y); });
 window.addEventListener('mouseup', () => { drawing = false; });
 
+numTypesInput.addEventListener('change', () => setSpeciesCount(numTypesInput.value));
 document.getElementById('clear').addEventListener('click', () => { particles = []; draw(); });
 document.getElementById('save').addEventListener('click', save);
 document.getElementById('download').addEventListener('click', download);
