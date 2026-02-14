@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Particle Life Realtime</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        background: #0f1117;
+        color: #f2f2f2;
+      }
+
+      #glcanvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+
+      #controls {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 20;
+        background: rgba(0, 0, 0, 0.75);
+        border-radius: 8px;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-width: min(90vw, 360px);
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      }
+
+      #controls label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #fff;
+      }
+
+      #controls input[type="range"] {
+        width: 140px;
+      }
+
+      #controls span {
+        min-width: 36px;
+        text-align: right;
+      }
+
+      #controls .pbcToggle {
+        padding: 8px 10px;
+        background: rgba(14, 22, 38, 0.95);
+        border: 0px solid #6eb8ff;
+        border-radius: 0px;
+        color: #e9f3ff;
+        font-size: 8px;
+        font-weight: 700;
+      }
+
+      #controls .pbcToggle input[type="checkbox"] {
+        width: 10px;
+        height: 10px;
+        accent-color: #6eb8ff;
+      }
+
+      #stats {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 10;
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 8px;
+        padding: 10px;
+        min-width: 170px;
+        font-size: 13px;
+      }
+
+      #stats div {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      button,
+      input,
+      select {
+        background: #1d2330;
+        color: #fff;
+        border: 1px solid #3c4354;
+        border-radius: 6px;
+        padding: 6px 8px;
+      }
+
+      label {
+        font-size: 13px;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .row {
+        display: flex;
+        gap: 6px;
+      }
+
+      @media (max-width: 700px) {
+        #controls {
+          top: 10px;
+          left: 10px;
+          max-width: calc(100vw - 20px);
+          max-height: calc(100vh - 20px);
+        }
+
+        #stats {
+          top: 10px;
+          right: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="glcanvas"></canvas>
+    <div id="controls">
+      <div class="row">
+        <button id="toggleBtn">Pause</button>
+        <button id="resetBtn">Reset</button>
+        <label class="pbcToggle">
+          <input type="checkbox" id="pbcTilingToggle" />
+          3×3 PBC View
+        </label>
+      </div>
+      <label>
+        dt:
+        <input type="range" id="dtSlider" min="0.0" max="0.05" step="0.001" value="0.001" />
+        <span id="dtValue">0.001</span>
+      </label>
+      <label>
+        speed:
+        <input type="range" id="speedSlider" min="0.1" max="10" step="0.1" value="1.0" />
+        <span id="speedValue">1.0</span>
+      </label>
+      <label>
+        send_every:
+        <input type="range" id="sendEverySlider" min="1" max="20" step="1" value="1" />
+        <span id="sendEveryValue">1</span>
+      </label>
+      <label>
+        point_size:
+        <input type="range" id="pointSize" min="1" max="50" step="0.5" value="15" />
+        <span id="pointSizeValue">15.0</span>
+      </label>
+      <label>
+        seed:
+        <input type="number" id="seedInput" step="1" value="0" />
+      </label>
+      <div class="row">
+        <button id="randomizeSeedBtn">Randomize Seed</button>
+        <button id="applySeedBtn">Apply Seed</button>
+      </div>
+      <label>
+        Color scheme:
+        <select id="colorSchemeSelect">
+          <option value="direct_clamp">direct_clamp</option>
+          <option value="normalize">normalize</option>
+          <option value="abs">abs</option>
+          <option value="softmax">softmax</option>
+          <option value="hsv_like">hsv_like</option>
+        </select>
+      </label>
+    </div>
+    <div id="stats">
+      <div><span>FPS</span><span id="fpsValue">0</span></div>
+      <div><span>realtime t</span><span id="realtimeValue">0.0s</span></div>
+      <div><span>physics t</span><span id="physicsValue">0.0s</span></div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
