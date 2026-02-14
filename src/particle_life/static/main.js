@@ -16,6 +16,7 @@ const appState = {
   matrixDraft: null,
   sectionCollapsed: new Map(),
   paused: false,
+  initialConditions: [],
   subscribers: new Set(),
 };
 let pointCount = 0;
@@ -490,6 +491,38 @@ function buildUI() {
     presetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/preset", { name: presetSelect.value })));
     presetRow.append(presetSelect, presetBtn);
     body.appendChild(presetRow);
+
+    const inputPresetRow = document.createElement("div");
+    inputPresetRow.className = "row";
+    const inputPresetSelect = document.createElement("select");
+    appState.initialConditions.forEach((name) => {
+      const o = document.createElement("option");
+      o.value = name;
+      o.textContent = name;
+      inputPresetSelect.appendChild(o);
+    });
+    const inputPresetBtn = document.createElement("button");
+    inputPresetBtn.textContent = "Load input JSON";
+    inputPresetBtn.disabled = appState.initialConditions.length === 0;
+    inputPresetBtn.addEventListener("click", async () => {
+      const result = await postJSON("/api/initial_condition/load", { name: inputPresetSelect.value });
+      if (result.error) {
+        alert(`Failed to load preset: ${result.error}`);
+        return;
+      }
+      setRemoteState({ values: result.values });
+    });
+    inputPresetRow.append(inputPresetSelect, inputPresetBtn);
+    body.appendChild(inputPresetRow);
+
+    const editorRow = document.createElement("div");
+    editorRow.className = "row";
+    const editorBtn = document.createElement("button");
+    editorBtn.textContent = "Open editor";
+    editorBtn.style.width = "100%";
+    editorBtn.addEventListener("click", () => window.open("/editor", "_blank"));
+    editorRow.appendChild(editorBtn);
+    body.appendChild(editorRow);
   });
 
   appState.sections.forEach((section) => {
@@ -630,6 +663,13 @@ async function init() {
   const res = await fetch("/api/config");
   const data = await res.json();
   setRemoteState(data);
+  try {
+    const presetRes = await fetch("/api/initial_condition/list");
+    const presetData = await presetRes.json();
+    appState.initialConditions = Array.isArray(presetData.items) ? presetData.items : [];
+  } catch (_e) {
+    appState.initialConditions = [];
+  }
   appState.subscribers.add(() => buildUI());
   buildUI();
   animate();
