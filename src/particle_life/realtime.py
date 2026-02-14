@@ -88,10 +88,16 @@ class PresetLoad(BaseModel):
     name: str
 
 
+class PauseUpdate(BaseModel):
+    paused: bool
+
+
 class ParticleLifeSim:
     def __init__(self, cfg: SimConfig):
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
+        self.paused = False
+        self.matrix_version = 0
         self.reset_state(random_matrix=True)
 
     def reset_state(self, random_matrix: bool = False) -> None:
@@ -107,6 +113,8 @@ class ParticleLifeSim:
 
     def set_matrix(self, matrix: list[list[float]] | np.ndarray) -> None:
         self.matrix = _sanitize_matrix(matrix, self.cfg.species_count).copy()
+        self.matrix_version += 1
+        print(f"[sim] interaction matrix version -> {self.matrix_version}")
 
     def matrix_values(self) -> list[list[float]]:
         return self.matrix.astype(float).tolist()
@@ -276,13 +284,20 @@ async def load_preset(payload: PresetLoad) -> dict:
     return {"values": _config_values()}
 
 
+@app.post("/api/sim/pause")
+async def set_pause(payload: PauseUpdate) -> dict:
+    sim.paused = bool(payload.paused)
+    return {"paused": sim.paused}
+
+
 @app.websocket("/ws")
 async def stream_particles(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         while True:
-            for _ in range(sim.cfg.steps_per_frame):
-                sim.step()
+            if not sim.paused:
+                for _ in range(sim.cfg.steps_per_frame):
+                    sim.step()
             await websocket.send_bytes(sim.snapshot())
             await asyncio.sleep(1 / 60)
     except WebSocketDisconnect:

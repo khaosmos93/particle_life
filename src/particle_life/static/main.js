@@ -17,6 +17,7 @@ const appState = {
   paused: false,
   subscribers: new Set(),
 };
+let matrixCommitTimer = null;
 
 let pointCount = 0;
 let positions = new Float32Array();
@@ -139,6 +140,20 @@ async function postJSON(path, body = {}) {
 async function applyUpdates(updates) {
   const result = await postJSON("/api/config/update", { updates });
   setRemoteState({ values: result.values });
+}
+
+async function setPaused(paused) {
+  const result = await postJSON("/api/sim/pause", { paused });
+  appState.paused = Boolean(result.paused);
+  buildUI();
+}
+
+function scheduleMatrixCommit() {
+  if (matrixCommitTimer) clearTimeout(matrixCommitTimer);
+  matrixCommitTimer = setTimeout(() => {
+    matrixCommitTimer = null;
+    applyUpdates({ interaction_matrix: appState.matrixDraft });
+  }, 120);
 }
 
 async function applyControlValue(key, raw, control) {
@@ -273,6 +288,7 @@ function buildMatrixEditor(parent) {
     }
     appState.matrixDraft = matrix.map((r) => r.map(clampMatrixValue));
     syncMatrix();
+    scheduleMatrixCommit();
   });
 
   const applyBtn = document.createElement("button");
@@ -300,6 +316,7 @@ function buildMatrixEditor(parent) {
     if (rows.length !== n || rows.some((r) => r.length !== n || r.some((v) => !Number.isFinite(v)))) return;
     appState.matrixDraft = rows.map((r) => r.map(clampMatrixValue));
     syncMatrix();
+    scheduleMatrixCommit();
   });
   clipboardRow.append(copyBtn, pasteBtn);
 
@@ -342,6 +359,7 @@ function syncMatrix() {
       input.addEventListener("change", () => {
         appState.matrixDraft[i][j] = clampMatrixValue(input.value);
         syncMatrix();
+        scheduleMatrixCommit();
       });
 
       input.addEventListener("mousedown", (event) => {
@@ -358,6 +376,7 @@ function syncMatrix() {
         const onUp = () => {
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
+          scheduleMatrixCommit();
         };
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp, { once: true });
@@ -392,7 +411,7 @@ function buildUI() {
     runRow.className = "row";
     const pauseBtn = document.createElement("button");
     pauseBtn.textContent = appState.paused ? "Resume" : "Pause";
-    pauseBtn.addEventListener("click", () => { appState.paused = !appState.paused; buildUI(); });
+    pauseBtn.addEventListener("click", async () => { await setPaused(!appState.paused); });
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "Reset";
     resetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/reset")));
@@ -479,7 +498,6 @@ function draw() {
 }
 
 function consumeFrame(buffer) {
-  if (appState.paused) return;
   const data = new Float32Array(buffer);
   pointCount = Math.floor(data.length / 5);
   positions = new Float32Array(pointCount * 2);
