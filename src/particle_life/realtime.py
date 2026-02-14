@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -32,6 +34,7 @@ class SimConfig:
     show_hud: bool = True
     pbc_tiling: bool = False
     color_mode: str = "species"
+    type_colors: list[str] = field(default_factory=lambda: ["#ff6f5f", "#56c3ff", "#7aff63", "#ffe26a", "#d086ff", "#ffa04d", "#60ffd0", "#c8dbff", "#ff73b8", "#88ff9e", "#6f8bff", "#ffc56f"])
     seed: int = 0
 
 
@@ -81,6 +84,8 @@ PRESETS = {
     "Chaotic": {"dt": 0.03, "damping": 0.94, "force_scale": 0.9, "repel_radius": 0.014},
 }
 
+INITIAL_CONDITION_DIR = Path("data/initial_condition")
+
 
 class ConfigUpdate(BaseModel):
     updates: dict[str, Any]
@@ -92,6 +97,15 @@ class PresetLoad(BaseModel):
 
 class PauseUpdate(BaseModel):
     paused: bool
+
+
+class InitialConditionSave(BaseModel):
+    name: str
+    input_json: dict[str, Any]
+
+
+class InitialConditionLoad(BaseModel):
+    name: str
 
 
 class ParticleLifeSim:
@@ -122,6 +136,23 @@ class ParticleLifeSim:
         self.matrix = _sanitize_matrix(matrix, self.cfg.species_count).copy()
         self.matrix_version += 1
         print(f"[sim] interaction matrix version -> {self.matrix_version}")
+
+    def load_state(
+        self,
+        cfg: SimConfig,
+        matrix: np.ndarray,
+        positions: np.ndarray,
+        velocities: np.ndarray,
+        species: np.ndarray,
+    ) -> None:
+        self.cfg = cfg
+        self.rng = np.random.default_rng(cfg.seed)
+        self.count = int(species.shape[0])
+        self.positions = positions.astype(np.float32, copy=True)
+        self.velocities = velocities.astype(np.float32, copy=True)
+        self.species = species.astype(np.int32, copy=True)
+        self.matrix = matrix.astype(np.float32, copy=True)
+        self.matrix_version += 1
 
     def matrix_values(self) -> list[list[float]]:
         return self.matrix.astype(float).tolist()
@@ -228,6 +259,99 @@ def _sanitize_particle_counts(counts, species_count: int, default_count: int) ->
     return sanitized
 
 
+def _validate_filename(name: str) -> str:
+    cleaned = str(name).strip()
+    if not cleaned:
+        raise ValueError("name is required")
+    if not cleaned.endswith(".json"):
+        cleaned = f"{cleaned}.json"
+    if "/" in cleaned or "\\" in cleaned or cleaned.startswith("."):
+        raise ValueError("invalid file name")
+    return cleaned
+
+
+def _coerce_config(raw: dict[str, Any]) -> SimConfig:
+    defaults = _defaults()
+    values = defaults.copy()
+    for key, control in control_index.items():
+        if key in raw:
+            values[key] = _cast_control_value(control, raw[key])
+    if "type_colors" in raw and isinstance(raw["type_colors"], list):
+        values["type_colors"] = [str(c) for c in raw["type_colors"] if str(c).strip()][:64]
+    values["particle_counts"] = _sanitize_particle_counts(
+        raw.get("particle_counts", values.get("particle_counts", [])),
+        int(values["species_count"]),
+        int(values["particles_per_species"]),
+    )
+    return SimConfig(**values)
+
+
+def _parse_input_json(input_json: dict[str, Any]) -> tuple[SimConfig, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if not isinstance(input_json, dict):
+        raise ValueError("input JSON must be an object")
+    if input_json.get("schema_version") != 1:
+        raise ValueError("schema_version must be 1")
+
+    cfg = _coerce_config(input_json.get("config", {}))
+    matrix = _sanitize_matrix(input_json.get("interaction_matrix"), cfg.species_count)
+    particles = input_json.get("particles")
+    if not isinstance(particles, list):
+        raise ValueError("particles must be an array")
+
+    count = len(particles)
+    positions = np.empty((count, 2), dtype=np.float32)
+    velocities = np.empty((count, 2), dtype=np.float32)
+    species = np.empty((count,), dtype=np.int32)
+    particle_counts = [0] * cfg.species_count
+    for idx, item in enumerate(particles):
+        if not isinstance(item, dict):
+            raise ValueError(f"particles[{idx}] must be an object")
+        pos = item.get("position")
+        vel = item.get("velocity", [0.0, 0.0])
+        ptype = item.get("type")
+        if not (isinstance(pos, list) and len(pos) == 2):
+            raise ValueError(f"particles[{idx}].position must be [x, y]")
+        if not (isinstance(vel, list) and len(vel) == 2):
+            raise ValueError(f"particles[{idx}].velocity must be [vx, vy]")
+        try:
+            px, py = float(pos[0]), float(pos[1])
+            vx, vy = float(vel[0]), float(vel[1])
+            species_idx = int(ptype)
+        except (TypeError, ValueError):
+            raise ValueError(f"particles[{idx}] has non-numeric fields") from None
+        if species_idx < 0 or species_idx >= cfg.species_count:
+            raise ValueError(f"particles[{idx}].type out of range")
+        if not np.isfinite([px, py, vx, vy]).all():
+            raise ValueError(f"particles[{idx}] has non-finite values")
+        if px < 0 or py < 0 or px > cfg.world_size or py > cfg.world_size:
+            raise ValueError(f"particles[{idx}].position outside world bounds")
+        positions[idx, :] = [px, py]
+        velocities[idx, :] = [vx, vy]
+        species[idx] = species_idx
+        particle_counts[species_idx] += 1
+
+    cfg.particle_counts = particle_counts
+    return cfg, matrix, positions, velocities, species
+
+
+def _build_input_json() -> dict[str, Any]:
+    particles = []
+    for i in range(sim.count):
+        particles.append(
+            {
+                "position": [float(sim.positions[i, 0]), float(sim.positions[i, 1])],
+                "velocity": [float(sim.velocities[i, 0]), float(sim.velocities[i, 1])],
+                "type": int(sim.species[i]),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "config": asdict(sim.cfg),
+        "interaction_matrix": sim.matrix_values(),
+        "particles": particles,
+    }
+
+
 app = FastAPI(title="Particle Life")
 app.mount("/static", StaticFiles(directory="src/particle_life/static"), name="static")
 control_index = _build_control_index()
@@ -246,9 +370,79 @@ async def index() -> FileResponse:
     return FileResponse("src/particle_life/static/index.html")
 
 
+@app.get("/editor")
+async def editor() -> FileResponse:
+    return FileResponse("src/particle_life/static/editor.html")
+
+
 @app.get("/api/config")
 async def get_config() -> dict:
     return {"sections": CONFIG_SECTIONS, "values": _config_values(), "presets": list(PRESETS.keys())}
+
+
+@app.get("/api/initial_condition/list")
+async def list_initial_conditions() -> dict:
+    INITIAL_CONDITION_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted([p.name for p in INITIAL_CONDITION_DIR.glob("*.json")])
+    return {"items": files}
+
+
+@app.post("/api/initial_condition/load")
+async def load_initial_condition(payload: InitialConditionLoad) -> dict:
+    try:
+        filename = _validate_filename(payload.name)
+        path = INITIAL_CONDITION_DIR / filename
+        if not path.exists():
+            return {"values": _config_values(), "error": "preset not found"}
+        input_json = json.loads(path.read_text(encoding="utf-8"))
+        cfg, matrix, positions, velocities, species = _parse_input_json(input_json)
+        sim.load_state(cfg, matrix, positions, velocities, species)
+        return {"values": _config_values()}
+    except ValueError as exc:
+        return {"values": _config_values(), "error": str(exc)}
+    except json.JSONDecodeError as exc:
+        return {"values": _config_values(), "error": f"invalid JSON: {exc.msg}"}
+
+
+@app.post("/api/initial_condition/save")
+async def save_initial_condition(payload: InitialConditionSave) -> dict:
+    try:
+        filename = _validate_filename(payload.name)
+        cfg, matrix, positions, velocities, species = _parse_input_json(payload.input_json)
+        normalized = {
+            "schema_version": 1,
+            "config": asdict(cfg),
+            "interaction_matrix": matrix.astype(float).tolist(),
+            "particles": [
+                {
+                    "position": [float(positions[i, 0]), float(positions[i, 1])],
+                    "velocity": [float(velocities[i, 0]), float(velocities[i, 1])],
+                    "type": int(species[i]),
+                }
+                for i in range(species.shape[0])
+            ],
+        }
+        INITIAL_CONDITION_DIR.mkdir(parents=True, exist_ok=True)
+        path = INITIAL_CONDITION_DIR / filename
+        path.write_text(json.dumps(normalized, separators=(",", ":")), encoding="utf-8")
+        return {"ok": True, "name": filename}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/input_json")
+async def export_input_json() -> dict:
+    return _build_input_json()
+
+
+@app.post("/api/input_json/load")
+async def load_input_json(payload: dict[str, Any]) -> dict:
+    try:
+        cfg, matrix, positions, velocities, species = _parse_input_json(payload)
+        sim.load_state(cfg, matrix, positions, velocities, species)
+        return {"values": _config_values()}
+    except ValueError as exc:
+        return {"values": _config_values(), "error": str(exc)}
 
 
 @app.post("/api/config/update")

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Initial Condition Editor</title>
+    <style>
+      body { margin:0; font-family: Inter, system-ui, sans-serif; background:#070b16; color:#e8efff; display:flex; height:100vh; }
+      #side { width:320px; padding:10px; border-right:1px solid #2b3446; background:rgba(16,20,30,.95); overflow:auto; box-sizing:border-box; }
+      #main { flex:1; display:flex; flex-direction:column; }
+      #world { flex:1; width:100%; display:block; background:#050913; cursor:crosshair; }
+      .row { display:flex; gap:6px; margin-bottom:8px; align-items:center; }
+      input,select,button { background:#131a28; color:#eef4ff; border:1px solid #36435b; border-radius:4px; padding:4px 6px; font-size:12px; }
+      input,select { flex:1; }
+      label { font-size:12px; color:#9cafcd; min-width:92px; }
+      .hint { font-size:11px; color:#93a1bf; margin:8px 0; }
+    </style>
+  </head>
+  <body>
+    <div id="side">
+      <h3 style="margin:0 0 10px 0">Initial Condition Editor</h3>
+      <div class="row"><label>Preset name</label><input id="name" value="custom_preset.json" /></div>
+      <div class="row"><label>Paint type</label><select id="type"></select></div>
+      <div class="row"><label>Brush radius</label><input id="radius" type="number" min="0.005" max="0.4" step="0.005" value="0.05" /></div>
+      <div class="row"><label>Per stroke</label><input id="density" type="number" min="1" max="500" step="1" value="24" /></div>
+      <div class="row"><label>Jitter</label><input id="jitter" type="number" min="0" max="1" step="0.01" value="0.45" /></div>
+      <div class="row"><label>Speed jitter</label><input id="speed" type="number" min="0" max="0.2" step="0.001" value="0.01" /></div>
+      <div class="row"><button id="clear" style="flex:1">Clear particles</button><button id="save" style="flex:1">Save JSON</button></div>
+      <div class="row"><button id="download" style="flex:1">Download JSON</button></div>
+      <div class="hint">Click and drag to paint particles. This saves a full deterministic simulation input JSON.</div>
+      <pre id="status" style="font-size:11px;white-space:pre-wrap;color:#a6b6d6"></pre>
+    </div>
+    <div id="main"><canvas id="world"></canvas></div>
+    <script type="module" src="/static/editor.js"></script>
+  </body>
+</html>
