@@ -22,30 +22,13 @@
         color: var(--text);
       }
       canvas { display: block; width: 100vw; height: 100vh; }
-      #menu-bar {
-        position: fixed;
-        left: 0;
-        top: 0;
-        height: 28px;
-        width: 360px;
-        z-index: 20;
-        display: flex;
-        align-items: center;
-        gap: 18px;
-        padding: 0 12px;
-        border-right: 1px solid var(--panel-border);
-        border-bottom: 1px solid var(--panel-border);
-        background: #111826;
-        color: #b9c5dd;
-        font-size: 12px;
-      }
       #panel {
         position: fixed;
         left: 0;
-        top: 28px;
+        top: 0;
         z-index: 20;
         width: 360px;
-        height: calc(100vh - 28px);
+        height: 100vh;
         overflow: auto;
         box-sizing: border-box;
         padding: 10px;
@@ -95,10 +78,12 @@
         user-select: none;
       }
       .matrix-cell {
-        width: 24px;
-        height: 22px;
+        width: 100%;
+        min-width: 38px;
+        height: 24px;
         border: 1px solid #223;
         border-radius: 2px;
+        padding: 0 4px;
         cursor: ns-resize;
       }
       .matrix-axis-dot {
@@ -115,7 +100,6 @@
     </style>
   </head>
   <body>
-    <div id="menu-bar">File <span>View</span> <span>Help</span></div>
     <div id="panel"></div>
     <canvas id="canvas"></canvas>
     <script type="module" src="/static/main.js"></script>
