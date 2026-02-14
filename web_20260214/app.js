@@ -103,7 +103,7 @@ function sendControlUpdate() {
 }
 
 function updateControlValues() {
-  dtValue.textContent = Number(dtSlider.value).toFixed(2);
+  dtValue.textContent = Number(dtSlider.value).toFixed(4);
   speedValue.textContent = Number(speedSlider.value).toFixed(1);
   sendEveryValue.textContent = sendEverySlider.value;
   pointSizeValue.textContent = Number(pointSizeSlider.value).toFixed(1);

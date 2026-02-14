@@ -61,15 +61,7 @@ def pack_frame_arrays(pos: np.ndarray, state: np.ndarray, box_size: float) -> by
 
 class RealtimeSimulation:
     def __init__(self) -> None:
-        self.cfg = SimulationConfig(
-            n_particles=100,
-            state_dim=3,
-            dt=0.01,
-            steps=0,
-            seed=0, #int(np.random.SeedSequence().generate_state(1, dtype=np.uint64)[0]),
-            box_size=1.0,
-            out_path=None,
-        )
+        self.cfg = SimulationConfig()
         self.realtime_speed = 0.12
         self.running = True
         self.send_every = 1
@@ -114,23 +106,24 @@ class RealtimeSimulation:
         return particles
 
     def _make_interaction(self, rng: np.random.Generator) -> Interaction:
-        coupling_matrix = np.array([
-            [0.0, 0.0, 1 / np.sqrt(2)],
-            [0.0, 0.0, 0.0],
-            [-np.sqrt(2), 0.0, 0.0],
-        ], dtype=np.float64)
+        # FIXME: coupling
+        # coupling_matrix = np.array([
+        #     [0.0, 0.0, 1 / np.sqrt(2)],
+        #     [0.0, 0.0, 0.0],
+        #     [-np.sqrt(2), 0.0, 0.0],
+        # ], dtype=np.float64)
         return Interaction(
             box_size=self.cfg.box_size,
             wrap=self.cfg.wrap,
             r_min=self.cfg.r_min,
             r0=self.cfg.r_min,
             r_cut=self.cfg.r_cut,
-            k_rep=1.0,
+            k_rep=self.cfg.k_rep,
             k_mid=self.cfg.k_mid,
             gamma=self.cfg.gamma,
             sigma=self.cfg.sigma,
             rng=rng,
-            coupling_matrix=coupling_matrix,
+            coupling_matrix=None,
         )
 
     def _params_payload(self) -> dict:
@@ -276,7 +269,8 @@ class RealtimeSimulation:
             dt_eff = self.cfg.dt * self.speed
             forces = self._compute_forces()
             for i, p in enumerate(self.particles):
-                p.vel = p.vel + (forces[i] / p.m) * dt_eff
+                # FIXME: make 10 configurable
+                p.vel = np.power(0.5, dt_eff/10.) * p.vel + (forces[i] / p.m) * dt_eff
                 p.pos = p.pos + p.vel * dt_eff
                 if self.cfg.wrap:
                     p.pos %= self.cfg.box_size

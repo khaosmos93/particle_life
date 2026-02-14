@@ -105,22 +105,30 @@ class Interaction:
             d = max(1, si.size)
             return float(si @ (self.coupling_matrix @ sj)) / d
 
-        if np.array_equal(si, sj):
-            return 0.1
-        if si[0] > sj[0]:
+        # FIXME: for test
+        if si[0] > 0 and sj[0] > 0:
             return 1.0
-        return -0.5
+        elif si[0] < 0 and sj[0] < 0:
+            return 1.0
+        elif si[0] > 0 and sj[0] < 0:
+            return 0.0
+        else:  # si[0] < 0 and sj[0] > 0:
+            return -1.0
 
     def pair_force_from_delta(self, delta: np.ndarray, c: float) -> np.ndarray:
         r = np.linalg.norm(delta)
         if r == 0 or r >= self.r_cut:
             return np.zeros(2, dtype=np.float64)
 
+        # FIXME: for test
         unit = delta / r
+        mag = 0.
         if r < self.r_min:
-            mag = self.k_rep * (self.r_min - r) / self.r_min
+            mag = self.k_rep * (r/self.r_min - 1.)
+        elif r < 1.:
+            mag = self.k_mid * c * (1. - np.abs(2.*r - 1. - self.r_min)/(1. - self.r_min))
         else:
-            mag = self.k_mid * c * (1 - r / self.r_cut) * (self.r0 - r) / self.r0
+            mag = 0.
 
         return -mag * unit
 

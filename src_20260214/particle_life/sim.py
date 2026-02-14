@@ -13,23 +13,34 @@ from particle_life.particles import Interaction, Particle
 @dataclass
 class SimulationConfig:
     n_particles: int = 200
-    state_dim: int = 2
-    dt: float = 0.01
-    steps: int = 1000
+    state_dim: int = 1
+    dt: float = 0.001
+    steps: int = 0
     seed: int = 0
     box_size: float = 1.0
     wrap: bool = True
-    r_min: float = 0.01
-    r0: float = 0.01
-    r_cut: float = 0.25
-    k_rep: float = 0.5
-    k_mid: float = 100.0
-    gamma: float = 0.2
-    sigma: float = 0.05
+    r_min: float = 0.3
+    r0: float = 0.3
+    r_cut: float = 0.1
+    k_rep: float = 1.0
+    k_mid: float = 1.0
+    gamma: float = 0.  # 0.2
+    sigma: float = 0.  # 0.05
     chunk: int = 1
     out_path: str | None = None
 
 
+
+
+
+
+
+
+
+
+
+
+""""
 def init_particles(cfg: SimulationConfig) -> list[Particle]:
     _, particles, _ = build_initial_state(cfg, preset_id=None, seed=cfg.seed)
     return particles
@@ -174,3 +185,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+"""
