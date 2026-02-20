@@ -31,6 +31,7 @@ let matrixUpdateInFlight = false;
 let matrixUpdateQueued = false;
 
 const perf = { gfxFrames: 0, physicsFrames: 0, lastStamp: performance.now(), gfxFps: 0, physicsFps: 0 };
+const runtimeStats = { entropy: null };
 
 const vertexSrc = `
 attribute vec2 a_pos;
@@ -448,7 +449,7 @@ function buildUI() {
 
   if (appState.values.show_hud !== false) {
     createSection("Info", (body) => {
-      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Per-type counts", "Velocity std dev", "Matrix version"].forEach((k) => {
+      ["Graphics FPS", "Physics FPS", "Speed ratio", "Particles", "Types", "Per-type counts", "Velocity std dev", "Entropy (nats)", "Matrix version"].forEach((k) => {
         const line = document.createElement("div");
         line.className = "stats-line";
         const name = document.createElement("span");
@@ -648,6 +649,7 @@ function updateStats() {
       const displayCounts = Array.isArray(appState.values.particle_counts) ? appState.values.particle_counts.join(",") : "--";
       statsNodes["Per-type counts"].textContent = displayCounts;
       statsNodes["Velocity std dev"].textContent = velocityStdDev().toFixed(4);
+      statsNodes["Entropy (nats)"].textContent = Number.isFinite(runtimeStats.entropy) ? runtimeStats.entropy.toFixed(4) : "--";
       statsNodes["Matrix version"].textContent = String(appState.values.matrix_version ?? "--");
     }
   }
@@ -678,6 +680,17 @@ async function init() {
 const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${wsScheme}://${window.location.host}/ws`);
 ws.binaryType = "arraybuffer";
-ws.onmessage = (event) => consumeFrame(event.data);
+ws.onmessage = (event) => {
+  if (typeof event.data === "string") {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "stats" && Number.isFinite(msg.entropy)) runtimeStats.entropy = Number(msg.entropy);
+    } catch (_e) {
+      // ignore malformed control messages
+    }
+    return;
+  }
+  consumeFrame(event.data);
+};
 
 init();
