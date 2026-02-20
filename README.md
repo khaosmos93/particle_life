@@ -73,3 +73,7 @@ In `http://localhost:8000`:
 - Use **Load input JSON** to load files from `data/initial_condition/`.
 - This applies all config values, interaction matrix, and initial particles atomically.
 - Use **Open editor** to create/edit new initial-condition files.
+
+## Acknowledgement
+
+This project started from [tom-mohr/particle-life-app](https://github.com/tom-mohr/particle-life-app) and was migrated to a Python + WebGL stack.
