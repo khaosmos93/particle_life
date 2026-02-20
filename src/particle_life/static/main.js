@@ -16,6 +16,13 @@ const appState = {
   matrixDraft: null,
   sectionCollapsed: new Map(),
   paused: false,
+  mode: "live",
+  replayRuns: [],
+  replayRun: "",
+  replayMeta: null,
+  replayPlaying: false,
+  replayFrame: 0,
+  replayFps: 60,
   initialConditions: [],
   subscribers: new Set(),
 };
@@ -29,6 +36,9 @@ let latestUpdateToken = 0;
 let latestAppliedUpdateToken = 0;
 let matrixUpdateInFlight = false;
 let matrixUpdateQueued = false;
+let replayTimer = null;
+let replayQueue = [];
+let replayFetching = false;
 
 const perf = { gfxFrames: 0, physicsFrames: 0, lastStamp: performance.now(), gfxFps: 0, physicsFps: 0 };
 const runtimeStats = { entropy: null };
@@ -160,6 +170,107 @@ async function applyUpdates(updates) {
 async function setPaused(paused) {
   const result = await postJSON("/api/sim/pause", { paused });
   appState.paused = Boolean(result.paused);
+  buildUI();
+}
+
+function stopReplayTimer() {
+  if (replayTimer) {
+    clearInterval(replayTimer);
+    replayTimer = null;
+  }
+}
+
+function setMode(mode) {
+  appState.mode = mode;
+  if (mode !== "replay") {
+    stopReplayTimer();
+    appState.replayPlaying = false;
+  }
+  buildUI();
+}
+
+function decodeFrameAt(data, frameIndex, particleCount) {
+  const stride = particleCount * 5;
+  const offset = frameIndex * stride;
+  pointCount = particleCount;
+  positions = new Float32Array(pointCount * 2);
+  species = new Float32Array(pointCount);
+  velocities = new Float32Array(pointCount * 2);
+  for (let i = 0; i < pointCount; i += 1) {
+    const j = offset + i * 5;
+    positions[i * 2] = data[j];
+    positions[i * 2 + 1] = data[j + 1];
+    species[i] = data[j + 2];
+    velocities[i * 2] = data[j + 3];
+    velocities[i * 2 + 1] = data[j + 4];
+  }
+  perf.physicsFrames += 1;
+}
+
+async function fetchReplayFrames(start, count) {
+  if (!appState.replayRun || replayFetching) return;
+  replayFetching = true;
+  try {
+    const res = await fetch(`/api/replay/${encodeURIComponent(appState.replayRun)}/frames?start=${start}&count=${count}`);
+    if (!res.ok) return;
+    const buf = await res.arrayBuffer();
+    const data = new Float32Array(buf);
+    const particleCount = Number(res.headers.get("x-particle-count"));
+    const frames = Number(res.headers.get("x-frame-count"));
+    for (let i = 0; i < frames; i += 1) replayQueue.push({ data, idx: i, particleCount });
+  } finally {
+    replayFetching = false;
+  }
+}
+
+function maybePrefetchReplay() {
+  if (!appState.replayMeta) return;
+  const remaining = appState.replayMeta.frame_count - appState.replayFrame;
+  if (remaining <= 0 || replayQueue.length > 24 || replayFetching) return;
+  fetchReplayFrames(appState.replayFrame, Math.min(60, remaining));
+}
+
+function playReplay() {
+  stopReplayTimer();
+  appState.replayPlaying = true;
+  replayTimer = setInterval(() => {
+    if (!appState.replayPlaying) return;
+    if (replayQueue.length === 0) {
+      maybePrefetchReplay();
+      return;
+    }
+    const item = replayQueue.shift();
+    decodeFrameAt(item.data, item.idx, item.particleCount);
+    appState.replayFrame += 1;
+    if (appState.replayFrame >= appState.replayMeta.frame_count) {
+      appState.replayPlaying = false;
+      stopReplayTimer();
+    }
+    maybePrefetchReplay();
+    buildUI();
+  }, Math.max(8, Math.floor(1000 / Math.max(1, appState.replayFps))));
+  buildUI();
+}
+
+function pauseReplay() {
+  appState.replayPlaying = false;
+  stopReplayTimer();
+  buildUI();
+}
+
+async function loadReplay(name, startFrame = 0) {
+  if (!name) return;
+  const metaRes = await fetch(`/api/replay/${encodeURIComponent(name)}/meta`);
+  if (!metaRes.ok) return;
+  const meta = await metaRes.json();
+  appState.replayRun = name;
+  appState.replayMeta = meta;
+  appState.replayFrame = Math.max(0, Math.min(startFrame, Number(meta.frame_count || 1) - 1));
+  replayQueue = [];
+  await fetchReplayFrames(appState.replayFrame, 1);
+  const first = replayQueue.shift();
+  if (first) decodeFrameAt(first.data, first.idx, first.particleCount);
+  maybePrefetchReplay();
   buildUI();
 }
 
@@ -464,57 +575,93 @@ function buildUI() {
   }
 
   createSection("Controls", (body) => {
-    const runRow = document.createElement("div");
-    runRow.className = "row";
-    const pauseBtn = document.createElement("button");
-    pauseBtn.textContent = appState.paused ? "Resume" : "Pause";
-    pauseBtn.addEventListener("click", async () => { await setPaused(!appState.paused); });
-    const resetBtn = document.createElement("button");
-    resetBtn.textContent = "Reset";
-    resetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/reset")));
-    const randomizeBtn = document.createElement("button");
-    randomizeBtn.textContent = "Randomize Seed";
-    randomizeBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/randomize")));
-    runRow.append(pauseBtn, resetBtn, randomizeBtn);
-    body.append(runRow);
+    const modeRow = document.createElement("div");
+    modeRow.className = "row";
+    const liveBtn = document.createElement("button");
+    liveBtn.textContent = "Live";
+    liveBtn.disabled = appState.mode === "live";
+    liveBtn.addEventListener("click", () => setMode("live"));
+    const replayBtn = document.createElement("button");
+    replayBtn.textContent = "Replay";
+    replayBtn.disabled = appState.mode === "replay";
+    replayBtn.addEventListener("click", () => setMode("replay"));
+    modeRow.append(liveBtn, replayBtn);
+    body.appendChild(modeRow);
 
-    const presetRow = document.createElement("div");
-    presetRow.className = "row";
-    const presetSelect = document.createElement("select");
-    appState.presets.forEach((name) => {
-      const o = document.createElement("option");
-      o.value = name;
-      o.textContent = name;
-      presetSelect.appendChild(o);
-    });
-    const presetBtn = document.createElement("button");
-    presetBtn.textContent = "Load preset";
-    presetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/preset", { name: presetSelect.value })));
-    presetRow.append(presetSelect, presetBtn);
-    body.appendChild(presetRow);
+    if (appState.mode === "live") {
+      const runRow = document.createElement("div");
+      runRow.className = "row";
+      const pauseBtn = document.createElement("button");
+      pauseBtn.textContent = appState.paused ? "Resume" : "Pause";
+      pauseBtn.addEventListener("click", async () => { await setPaused(!appState.paused); });
+      const resetBtn = document.createElement("button");
+      resetBtn.textContent = "Reset";
+      resetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/reset")));
+      const randomizeBtn = document.createElement("button");
+      randomizeBtn.textContent = "Randomize Seed";
+      randomizeBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/randomize")));
+      runRow.append(pauseBtn, resetBtn, randomizeBtn);
+      body.append(runRow);
 
-    const inputPresetRow = document.createElement("div");
-    inputPresetRow.className = "row";
-    const inputPresetSelect = document.createElement("select");
-    appState.initialConditions.forEach((name) => {
-      const o = document.createElement("option");
-      o.value = name;
-      o.textContent = name;
-      inputPresetSelect.appendChild(o);
-    });
-    const inputPresetBtn = document.createElement("button");
-    inputPresetBtn.textContent = "Load input JSON";
-    inputPresetBtn.disabled = appState.initialConditions.length === 0;
-    inputPresetBtn.addEventListener("click", async () => {
-      const result = await postJSON("/api/initial_condition/load", { name: inputPresetSelect.value });
-      if (result.error) {
-        alert(`Failed to load preset: ${result.error}`);
-        return;
-      }
-      setRemoteState({ values: result.values });
-    });
-    inputPresetRow.append(inputPresetSelect, inputPresetBtn);
-    body.appendChild(inputPresetRow);
+      const presetRow = document.createElement("div");
+      presetRow.className = "row";
+      const presetSelect = document.createElement("select");
+      appState.presets.forEach((name) => {
+        const o = document.createElement("option");
+        o.value = name;
+        o.textContent = name;
+        presetSelect.appendChild(o);
+      });
+      const presetBtn = document.createElement("button");
+      presetBtn.textContent = "Load preset";
+      presetBtn.addEventListener("click", async () => setRemoteState(await postJSON("/api/config/preset", { name: presetSelect.value })));
+      presetRow.append(presetSelect, presetBtn);
+      body.appendChild(presetRow);
+    } else {
+      const replayRow = document.createElement("div");
+      replayRow.className = "row";
+      const runSelect = document.createElement("select");
+      appState.replayRuns.forEach((name) => {
+        const o = document.createElement("option");
+        o.value = name;
+        o.textContent = name;
+        if (name === appState.replayRun) o.selected = true;
+        runSelect.appendChild(o);
+      });
+      const loadBtn = document.createElement("button");
+      loadBtn.textContent = "Load run";
+      loadBtn.disabled = appState.replayRuns.length === 0;
+      loadBtn.addEventListener("click", () => loadReplay(runSelect.value, 0));
+      replayRow.append(runSelect, loadBtn);
+      body.appendChild(replayRow);
+
+      const transport = document.createElement("div");
+      transport.className = "row";
+      const playBtn = document.createElement("button");
+      playBtn.textContent = appState.replayPlaying ? "Pause" : "Play";
+      playBtn.disabled = !appState.replayMeta;
+      playBtn.addEventListener("click", () => (appState.replayPlaying ? pauseReplay() : playReplay()));
+      const frameLabel = document.createElement("span");
+      frameLabel.className = "value";
+      frameLabel.style.width = "120px";
+      const total = appState.replayMeta ? Number(appState.replayMeta.frame_count) : 0;
+      frameLabel.textContent = `${appState.replayFrame}/${Math.max(0, total - 1)}`;
+      transport.append(playBtn, frameLabel);
+      body.appendChild(transport);
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "0";
+      slider.max = String(Math.max(0, (appState.replayMeta ? Number(appState.replayMeta.frame_count) : 1) - 1));
+      slider.step = "1";
+      slider.value = String(appState.replayFrame);
+      slider.disabled = !appState.replayMeta;
+      slider.addEventListener("change", async () => {
+        pauseReplay();
+        await loadReplay(appState.replayRun || runSelect.value, Number(slider.value));
+      });
+      body.appendChild(slider);
+    }
 
     const editorRow = document.createElement("div");
     editorRow.className = "row";
@@ -609,18 +756,8 @@ function draw() {
 
 function consumeFrame(buffer) {
   const data = new Float32Array(buffer);
-  pointCount = Math.floor(data.length / 5);
-  positions = new Float32Array(pointCount * 2);
-  species = new Float32Array(pointCount);
-  velocities = new Float32Array(pointCount * 2);
-  for (let i = 0; i < pointCount; i += 1) {
-    positions[i * 2] = data[i * 5];
-    positions[i * 2 + 1] = data[i * 5 + 1];
-    species[i] = data[i * 5 + 2];
-    velocities[i * 2] = data[i * 5 + 3];
-    velocities[i * 2 + 1] = data[i * 5 + 4];
-  }
-  perf.physicsFrames += 1;
+  const count = Math.floor(data.length / 5);
+  decodeFrameAt(data, 0, count);
 }
 
 function velocityStdDev() {
@@ -666,11 +803,12 @@ async function init() {
   const data = await res.json();
   setRemoteState(data);
   try {
-    const presetRes = await fetch("/api/initial_condition/list");
-    const presetData = await presetRes.json();
-    appState.initialConditions = Array.isArray(presetData.items) ? presetData.items : [];
+    const replayRes = await fetch("/api/replay/list");
+    const replayData = await replayRes.json();
+    appState.replayRuns = Array.isArray(replayData.items) ? replayData.items : [];
+    if (appState.replayRuns.length > 0) appState.replayRun = appState.replayRuns[0];
   } catch (_e) {
-    appState.initialConditions = [];
+    appState.replayRuns = [];
   }
   appState.subscribers.add(() => buildUI());
   buildUI();
@@ -681,6 +819,7 @@ const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
 const ws = new WebSocket(`${wsScheme}://${window.location.host}/ws`);
 ws.binaryType = "arraybuffer";
 ws.onmessage = (event) => {
+  if (appState.mode !== "live") return;
   if (typeof event.data === "string") {
     try {
       const msg = JSON.parse(event.data);

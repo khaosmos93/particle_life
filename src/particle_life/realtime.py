@@ -2,42 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-
-@dataclass
-class SimConfig:
-    species_count: int = 6
-    particles_per_species: int = 160
-    particle_counts: list[int] = field(default_factory=list)
-    world_size: float = 1.0
-    interaction_radius: float = 0.11
-    repel_radius: float = 0.025
-    force_scale: float = 0.42
-    dt: float = 0.015
-    damping: float = 0.975
-    max_speed: float = 0.05
-    noise_strength: float = 0.0
-    steps_per_frame: int = 1
-    boundary_mode: str = "wrap"
-    point_size: float = 3.0
-    point_opacity: float = 0.95
-    background_alpha: float = 1.0
-    show_hud: bool = True
-    pbc_tiling: bool = False
-    color_mode: str = "species"
-    type_colors: list[str] = field(default_factory=lambda: ["#ff6f5f", "#56c3ff", "#7aff63", "#ffe26a", "#d086ff", "#ffa04d", "#60ffd0", "#c8dbff", "#ff73b8", "#88ff9e", "#6f8bff", "#ffc56f"])
-    seed: int = 0
-
+from particle_life.simulation import ParticleLifeSim, SimConfig
+from particle_life.simulation.config import sanitize_matrix, sanitize_particle_counts
+from particle_life.storage import ReplayReader, list_runs
 
 CONFIG_SECTIONS = [
     {
@@ -45,7 +23,7 @@ CONFIG_SECTIONS = [
         "label": "Simulation",
         "controls": [
             {"key": "species_count", "type": "range", "label": "Species", "min": 2, "max": 12, "step": 1, "default": 6, "apply": "reset"},
-            {"key": "particles_per_species", "type": "range", "label": "Particles / Species", "min": 20, "max": 400, "step": 10, "default": 160, "apply": "reset"},
+            {"key": "particles_per_species", "type": "range", "label": "Particles / Species", "min": 20, "max": 2000, "step": 10, "default": 160, "apply": "reset"},
             {"key": "world_size", "type": "range", "label": "World Size", "min": 0.5, "max": 2.0, "step": 0.05, "default": 1.0, "apply": "reset"},
             {"key": "interaction_radius", "type": "range", "label": "Interaction Radius", "min": 0.02, "max": 0.35, "step": 0.005, "default": 0.11, "apply": "immediate"},
             {"key": "repel_radius", "type": "range", "label": "Repel Radius", "min": 0.005, "max": 0.08, "step": 0.001, "default": 0.025, "apply": "immediate"},
@@ -70,23 +48,16 @@ CONFIG_SECTIONS = [
             {"key": "show_hud", "type": "toggle", "label": "Show HUD", "default": True, "apply": "immediate"},
         ],
     },
-    {
-        "key": "random",
-        "label": "Random / Seed",
-        "controls": [
-            {"key": "seed", "type": "number", "label": "Seed", "min": 0, "max": 2147483647, "step": 1, "default": 0, "apply": "reset"},
-        ],
-    },
 ]
-
 PRESETS = {
     "Default": {},
-    "Dense": {"particles_per_species": 260, "interaction_radius": 0.09, "force_scale": 0.35},
+    "Dense": {"particles_per_species": 900, "interaction_radius": 0.09, "force_scale": 0.35},
     "Sparse": {"particles_per_species": 90, "interaction_radius": 0.15, "force_scale": 0.55},
     "Chaotic": {"dt": 0.03, "damping": 0.94, "force_scale": 0.9, "repel_radius": 0.014},
 }
 
 INITIAL_CONDITION_DIR = Path("data/initial_condition")
+REPLAY_DIR = Path("data/replays")
 
 
 class ConfigUpdate(BaseModel):
@@ -101,6 +72,7 @@ class PauseUpdate(BaseModel):
     paused: bool
 
 
+
 class InitialConditionSave(BaseModel):
     name: str
     input_json: dict[str, Any]
@@ -109,117 +81,31 @@ class InitialConditionSave(BaseModel):
 class InitialConditionLoad(BaseModel):
     name: str
 
+app = FastAPI(title="Particle Life")
+app.mount("/static", StaticFiles(directory="src/particle_life/static"), name="static")
+sim = ParticleLifeSim(SimConfig())
 
-class ParticleLifeSim:
-    def __init__(self, cfg: SimConfig):
-        self.cfg = cfg
-        self.rng = np.random.default_rng(cfg.seed)
-        self.paused = False
-        self.matrix_version = 0
-        self.reset_state(random_matrix=True)
 
-    def reset_state(self, random_matrix: bool = False) -> None:
-        cfg = self.cfg
-        cfg.particle_counts = _sanitize_particle_counts(cfg.particle_counts, cfg.species_count, cfg.particles_per_species)
-        self.count = int(sum(cfg.particle_counts))
-        self.positions = self.rng.random((self.count, 2), dtype=np.float32) * cfg.world_size
-        self.velocities = np.zeros((self.count, 2), dtype=np.float32)
-        self.species = np.concatenate([
-            np.full(count, species_idx, dtype=np.int32)
-            for species_idx, count in enumerate(cfg.particle_counts)
-            if count > 0
-        ]) if self.count else np.empty((0,), dtype=np.int32)
-        self.rng.shuffle(self.species)
-        if random_matrix or not hasattr(self, "matrix") or self.matrix.shape[0] != cfg.species_count:
-            self.matrix = self.rng.uniform(-1.0, 1.0, (cfg.species_count, cfg.species_count)).astype(np.float32)
-            np.fill_diagonal(self.matrix, self.rng.uniform(0.2, 1.0, cfg.species_count))
+def _build_control_index() -> dict[str, dict]:
+    return {c["key"]: c for section in CONFIG_SECTIONS for c in section["controls"]}
 
-    def set_matrix(self, matrix: list[list[float]] | np.ndarray) -> None:
-        self.matrix = _sanitize_matrix(matrix, self.cfg.species_count).copy()
-        self.matrix_version += 1
-        print(f"[sim] interaction matrix version -> {self.matrix_version}")
 
-    def load_state(
-        self,
-        cfg: SimConfig,
-        matrix: np.ndarray,
-        positions: np.ndarray,
-        velocities: np.ndarray,
-        species: np.ndarray,
-    ) -> None:
-        self.cfg = cfg
-        self.rng = np.random.default_rng(cfg.seed)
-        self.count = int(species.shape[0])
-        self.positions = positions.astype(np.float32, copy=True)
-        self.velocities = velocities.astype(np.float32, copy=True)
-        self.species = species.astype(np.int32, copy=True)
-        self.matrix = matrix.astype(np.float32, copy=True)
-        self.matrix_version += 1
-
-    def matrix_values(self) -> list[list[float]]:
-        return self.matrix.astype(float).tolist()
-
-    def step(self) -> None:
-        cfg = self.cfg
-        delta = self.positions[:, None, :] - self.positions[None, :, :]
-        if cfg.boundary_mode == "wrap":
-            delta -= np.round(delta / cfg.world_size) * cfg.world_size
-
-        dist2 = np.sum(delta * delta, axis=2) + 1e-12
-        np.fill_diagonal(dist2, np.inf)
-        dist = np.sqrt(dist2)
-
-        within = dist < cfg.interaction_radius
-        influence = np.clip(1.0 - dist / cfg.interaction_radius, 0.0, 1.0)
-
-        repel = np.clip(1.0 - dist / max(cfg.repel_radius, 1e-9), 0.0, 1.0)
-        interaction = self.matrix[self.species[:, None], self.species[None, :]]
-        strength = (interaction * influence - repel * 1.5) * within * cfg.force_scale
-
-        direction = -delta / dist[:, :, None]
-        force = np.sum(direction * strength[:, :, None], axis=1)
-        self.velocities = self.velocities * cfg.damping + force * cfg.dt
-        if cfg.noise_strength > 0:
-            # Scale by sqrt(dt) so noise is roughly time-step invariant (diffusion-like).
-            kick = self.rng.normal(0.0, cfg.noise_strength * np.sqrt(cfg.dt), self.velocities.shape).astype(np.float32)
-            self.velocities += kick
-
-        speed = np.linalg.norm(self.velocities, axis=1)
-        over = speed > cfg.max_speed
-        if np.any(over):
-            self.velocities[over] *= (cfg.max_speed / speed[over])[:, None]
-
-        self.positions = self.positions + self.velocities * cfg.dt
-        if cfg.boundary_mode == "wrap":
-            self.positions = np.mod(self.positions, cfg.world_size)
-        else:
-            for axis in (0, 1):
-                low = self.positions[:, axis] < 0
-                high = self.positions[:, axis] > cfg.world_size
-                self.positions[low | high, axis] = np.clip(self.positions[low | high, axis], 0, cfg.world_size)
-                self.velocities[low | high, axis] *= -1
-
-    def information_entropy(self, bins_per_dim: int = 16) -> float:
-        if self.count <= 0:
-            return 0.0
-        dims = int(self.positions.shape[1])
-        ranges = [(0.0, float(self.cfg.world_size))] * dims
-        hist, _ = np.histogramdd(self.positions, bins=[bins_per_dim] * dims, range=ranges)
-        probs = hist.ravel().astype(np.float64)
-        probs /= float(self.count)
-        probs = probs[probs > 0]
-        return float(-np.sum(probs * np.log(probs)))
-
-    def snapshot(self) -> bytes:
-        data = np.empty((self.count, 5), dtype=np.float32)
-        data[:, :2] = self.positions / self.cfg.world_size
-        data[:, 2] = self.species.astype(np.float32)
-        data[:, 3:5] = self.velocities
-        return data.tobytes()
+control_index = _build_control_index()
 
 
 def _defaults() -> dict:
     return asdict(SimConfig())
+
+
+def _clamp_numeric(control: dict, value: float | int):
+    low = control.get("min")
+    high = control.get("max")
+    out = value
+    if low is not None:
+        out = max(low, out)
+    if high is not None:
+        out = min(high, out)
+    return out
 
 
 def _cast_control_value(control: dict, value):
@@ -236,149 +122,6 @@ def _cast_control_value(control: dict, value):
         v = str(value)
         return v if v in control["options"] else control["default"]
     return value
-
-
-def _build_control_index() -> dict[str, dict]:
-    return {c["key"]: c for section in CONFIG_SECTIONS for c in section["controls"]}
-
-
-def _clamp_numeric(control: dict, value: float | int):
-    low = control.get("min")
-    high = control.get("max")
-    out = value
-    if low is not None:
-        out = max(low, out)
-    if high is not None:
-        out = min(high, out)
-    return out
-
-
-def _sanitize_matrix(matrix, species_count: int) -> np.ndarray:
-    arr = np.asarray(matrix, dtype=np.float32)
-    if arr.shape != (species_count, species_count):
-        raise ValueError("matrix shape mismatch")
-    if not np.all(np.isfinite(arr)):
-        raise ValueError("matrix has non-finite values")
-    return np.clip(arr, -1.0, 1.0).astype(np.float32)
-
-
-def _sanitize_particle_counts(counts, species_count: int, default_count: int) -> list[int]:
-    if not isinstance(counts, (list, tuple)):
-        counts = []
-    sanitized = []
-    for idx in range(species_count):
-        raw = counts[idx] if idx < len(counts) else default_count
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = int(default_count)
-        sanitized.append(int(_clamp_numeric({"min": 0, "max": 400}, value)))
-    return sanitized
-
-
-def _validate_filename(name: str) -> str:
-    cleaned = str(name).strip()
-    if not cleaned:
-        raise ValueError("name is required")
-    if not cleaned.endswith(".json"):
-        cleaned = f"{cleaned}.json"
-    if "/" in cleaned or "\\" in cleaned or cleaned.startswith("."):
-        raise ValueError("invalid file name")
-    return cleaned
-
-
-def _coerce_config(raw: dict[str, Any]) -> SimConfig:
-    defaults = _defaults()
-    values = defaults.copy()
-    for key, control in control_index.items():
-        if key in raw:
-            values[key] = _cast_control_value(control, raw[key])
-    if "type_colors" in raw and isinstance(raw["type_colors"], list):
-        values["type_colors"] = [str(c) for c in raw["type_colors"] if str(c).strip()][:64]
-    values["particle_counts"] = _sanitize_particle_counts(
-        raw.get("particle_counts", values.get("particle_counts", [])),
-        int(values["species_count"]),
-        int(values["particles_per_species"]),
-    )
-    return SimConfig(**values)
-
-
-def _parse_input_json(input_json: dict[str, Any]) -> tuple[SimConfig, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    if not isinstance(input_json, dict):
-        raise ValueError("input JSON must be an object")
-    if input_json.get("schema_version") != 1:
-        raise ValueError("schema_version must be 1")
-
-    config_raw = input_json.get("config", {})
-    if not isinstance(config_raw, dict):
-        raise ValueError("config must be an object")
-    if "species_count" not in config_raw and "num_types" in input_json:
-        config_raw = {**config_raw, "species_count": input_json.get("num_types")}
-    cfg = _coerce_config(config_raw)
-    matrix = _sanitize_matrix(input_json.get("interaction_matrix"), cfg.species_count)
-    particles = input_json.get("particles")
-    if not isinstance(particles, list):
-        raise ValueError("particles must be an array")
-
-    count = len(particles)
-    positions = np.empty((count, 2), dtype=np.float32)
-    velocities = np.empty((count, 2), dtype=np.float32)
-    species = np.empty((count,), dtype=np.int32)
-    particle_counts = [0] * cfg.species_count
-    for idx, item in enumerate(particles):
-        if not isinstance(item, dict):
-            raise ValueError(f"particles[{idx}] must be an object")
-        pos = item.get("position")
-        vel = item.get("velocity", [0.0, 0.0])
-        ptype = item.get("type")
-        if not (isinstance(pos, list) and len(pos) == 2):
-            raise ValueError(f"particles[{idx}].position must be [x, y]")
-        if not (isinstance(vel, list) and len(vel) == 2):
-            raise ValueError(f"particles[{idx}].velocity must be [vx, vy]")
-        try:
-            px, py = float(pos[0]), float(pos[1])
-            vx, vy = float(vel[0]), float(vel[1])
-            species_idx = int(ptype)
-        except (TypeError, ValueError):
-            raise ValueError(f"particles[{idx}] has non-numeric fields") from None
-        if species_idx < 0 or species_idx >= cfg.species_count:
-            raise ValueError(f"particles[{idx}].type out of range")
-        if not np.isfinite([px, py, vx, vy]).all():
-            raise ValueError(f"particles[{idx}] has non-finite values")
-        if px < 0 or py < 0 or px > cfg.world_size or py > cfg.world_size:
-            raise ValueError(f"particles[{idx}].position outside world bounds")
-        positions[idx, :] = [px, py]
-        velocities[idx, :] = [vx, vy]
-        species[idx] = species_idx
-        particle_counts[species_idx] += 1
-
-    cfg.particle_counts = particle_counts
-    return cfg, matrix, positions, velocities, species
-
-
-def _build_input_json() -> dict[str, Any]:
-    particles = []
-    for i in range(sim.count):
-        particles.append(
-            {
-                "position": [float(sim.positions[i, 0]), float(sim.positions[i, 1])],
-                "velocity": [float(sim.velocities[i, 0]), float(sim.velocities[i, 1])],
-                "type": int(sim.species[i]),
-            }
-        )
-    return {
-        "schema_version": 1,
-        "num_types": int(sim.cfg.species_count),
-        "config": asdict(sim.cfg),
-        "interaction_matrix": sim.matrix_values(),
-        "particles": particles,
-    }
-
-
-app = FastAPI(title="Particle Life")
-app.mount("/static", StaticFiles(directory="src/particle_life/static"), name="static")
-control_index = _build_control_index()
-sim = ParticleLifeSim(SimConfig())
 
 
 def _config_values() -> dict:
@@ -403,11 +146,34 @@ async def get_config() -> dict:
     return {"sections": CONFIG_SECTIONS, "values": _config_values(), "presets": list(PRESETS.keys())}
 
 
+
+
+def _validate_filename(name: str) -> str:
+    cleaned = str(name).strip()
+    if not cleaned:
+        raise ValueError("name is required")
+    if not cleaned.endswith(".json"):
+        cleaned = f"{cleaned}.json"
+    if "/" in cleaned or "\\" in cleaned or cleaned.startswith("."):
+        raise ValueError("invalid file name")
+    return cleaned
+
+
 @app.get("/api/initial_condition/list")
 async def list_initial_conditions() -> dict:
     INITIAL_CONDITION_DIR.mkdir(parents=True, exist_ok=True)
-    files = sorted([p.name for p in INITIAL_CONDITION_DIR.glob("*.json")])
-    return {"items": files}
+    return {"items": sorted([p.name for p in INITIAL_CONDITION_DIR.glob("*.json")])}
+
+
+@app.post("/api/initial_condition/save")
+async def save_initial_condition(payload: InitialConditionSave) -> dict:
+    try:
+        filename = _validate_filename(payload.name)
+        INITIAL_CONDITION_DIR.mkdir(parents=True, exist_ok=True)
+        (INITIAL_CONDITION_DIR / filename).write_text(json.dumps(payload.input_json, separators=(",", ":")), encoding="utf-8")
+        return {"ok": True, "name": filename}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/initial_condition/load")
@@ -418,55 +184,46 @@ async def load_initial_condition(payload: InitialConditionLoad) -> dict:
         if not path.exists():
             return {"values": _config_values(), "error": "preset not found"}
         input_json = json.loads(path.read_text(encoding="utf-8"))
-        cfg, matrix, positions, velocities, species = _parse_input_json(input_json)
-        sim.load_state(cfg, matrix, positions, velocities, species)
+        cfg_raw = input_json.get("config", {}) if isinstance(input_json, dict) else {}
+        values = _defaults()
+        for key, control in control_index.items():
+            if key in cfg_raw:
+                values[key] = _cast_control_value(control, cfg_raw[key])
+        values["particle_counts"] = sanitize_particle_counts(
+            cfg_raw.get("particle_counts", values.get("particle_counts", [])),
+            int(values["species_count"]),
+            int(values["particles_per_species"]),
+        )
+        sim.cfg = SimConfig(**values)
+        sim.reset_state(random_matrix=False)
+        if isinstance(input_json, dict) and "interaction_matrix" in input_json:
+            sim.set_matrix(sanitize_matrix(input_json["interaction_matrix"], sim.cfg.species_count))
         return {"values": _config_values()}
-    except ValueError as exc:
+    except (ValueError, json.JSONDecodeError) as exc:
         return {"values": _config_values(), "error": str(exc)}
-    except json.JSONDecodeError as exc:
-        return {"values": _config_values(), "error": f"invalid JSON: {exc.msg}"}
+
+@app.get("/api/replay/list")
+async def replay_list() -> dict:
+    return {"items": list_runs(REPLAY_DIR)}
 
 
-@app.post("/api/initial_condition/save")
-async def save_initial_condition(payload: InitialConditionSave) -> dict:
+@app.get("/api/replay/{name}/meta")
+async def replay_meta(name: str) -> dict:
     try:
-        filename = _validate_filename(payload.name)
-        cfg, matrix, positions, velocities, species = _parse_input_json(payload.input_json)
-        normalized = {
-            "schema_version": 1,
-            "num_types": int(cfg.species_count),
-            "config": asdict(cfg),
-            "interaction_matrix": matrix.astype(float).tolist(),
-            "particles": [
-                {
-                    "position": [float(positions[i, 0]), float(positions[i, 1])],
-                    "velocity": [float(velocities[i, 0]), float(velocities[i, 1])],
-                    "type": int(species[i]),
-                }
-                for i in range(species.shape[0])
-            ],
-        }
-        INITIAL_CONDITION_DIR.mkdir(parents=True, exist_ok=True)
-        path = INITIAL_CONDITION_DIR / filename
-        path.write_text(json.dumps(normalized, separators=(",", ":")), encoding="utf-8")
-        return {"ok": True, "name": filename}
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+        return ReplayReader(REPLAY_DIR, name).meta
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/api/input_json")
-async def export_input_json() -> dict:
-    return _build_input_json()
-
-
-@app.post("/api/input_json/load")
-async def load_input_json(payload: dict[str, Any]) -> dict:
+@app.get("/api/replay/{name}/frames")
+async def replay_frames(name: str, start: int = Query(default=0, ge=0), count: int = Query(default=1, ge=1, le=600)) -> Response:
     try:
-        cfg, matrix, positions, velocities, species = _parse_input_json(payload)
-        sim.load_state(cfg, matrix, positions, velocities, species)
-        return {"values": _config_values()}
-    except ValueError as exc:
-        return {"values": _config_values(), "error": str(exc)}
+        reader = ReplayReader(REPLAY_DIR, name)
+        payload = reader.read_frames(start, count)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    headers = {"x-frame-start": str(start), "x-frame-count": str(min(count, max(0, reader.frame_count - start))), "x-particle-count": str(reader.count)}
+    return Response(content=payload, media_type="application/octet-stream", headers=headers)
 
 
 @app.post("/api/config/update")
@@ -474,7 +231,6 @@ async def update_config(payload: ConfigUpdate) -> dict:
     values = asdict(sim.cfg)
     next_matrix: np.ndarray | None = None
     needs_reset = False
-
     for key, value in payload.updates.items():
         control = control_index.get(key)
         if control:
@@ -483,18 +239,11 @@ async def update_config(payload: ConfigUpdate) -> dict:
                 needs_reset = True
 
     next_species_count = int(values["species_count"])
-    particle_counts_updated = False
     if "particle_counts" in payload.updates:
-        values["particle_counts"] = _sanitize_particle_counts(payload.updates["particle_counts"], next_species_count, int(values["particles_per_species"]))
+        values["particle_counts"] = sanitize_particle_counts(payload.updates["particle_counts"], next_species_count, int(values["particles_per_species"]))
         needs_reset = True
-        particle_counts_updated = True
-    if "particles_per_species" in payload.updates and not particle_counts_updated:
-        values["particle_counts"] = _sanitize_particle_counts([], next_species_count, int(values["particles_per_species"]))
-    elif "species_count" in payload.updates and not particle_counts_updated:
-        values["particle_counts"] = _sanitize_particle_counts(values.get("particle_counts", []), next_species_count, int(values["particles_per_species"]))
-
     if "interaction_matrix" in payload.updates:
-        next_matrix = _sanitize_matrix(payload.updates["interaction_matrix"], next_species_count)
+        next_matrix = sanitize_matrix(payload.updates["interaction_matrix"], next_species_count)
 
     sim.cfg = SimConfig(**values)
     if needs_reset:
@@ -502,7 +251,6 @@ async def update_config(payload: ConfigUpdate) -> dict:
         sim.reset_state(random_matrix=False)
     if next_matrix is not None:
         sim.set_matrix(next_matrix)
-
     return {"values": _config_values(), "reset_applied": needs_reset}
 
 
@@ -546,8 +294,7 @@ async def stream_particles(websocket: WebSocket) -> None:
     try:
         while True:
             if not sim.paused:
-                for _ in range(sim.cfg.steps_per_frame):
-                    sim.step()
+                sim.step_many(sim.cfg.steps_per_frame)
             await websocket.send_bytes(sim.snapshot())
             await websocket.send_text(json.dumps({"type": "stats", "entropy": sim.information_entropy()}))
             await asyncio.sleep(1 / 60)
