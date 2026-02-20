@@ -1,6 +1,6 @@
 # Particle Life (FastAPI + WebGL)
 
-Minimal realtime particle-life framework with a Python backend simulation and WebGL frontend rendering.
+Performance-focused Particle Life with a refactored CPU simulation core, realtime streaming, offline replay generation, and in-browser replay playback.
 
 ## Setup
 
@@ -9,72 +9,78 @@ bash scripts/setup_venv.sh
 source .venv/bin/activate
 ```
 
-## Run
+## Run realtime app
 
 ```bash
 PYTHONPATH=src python -m particle_life.realtime
 ```
 
-Then open: `http://localhost:8000`
+Open `http://localhost:8000`.
 
-## Manual verification (pause + live matrix updates)
+## Architecture overview
 
-1. Start the app and wait for particles to move.
-2. Click **Pause**. Confirm particles stop moving and Physics FPS drops near zero while Graphics FPS keeps updating.
-3. While paused, edit one or more interaction matrix cells (or use **Apply preset**).
-4. Click **Resume**. Confirm motion continues from the paused state and reflects the new matrix behavior.
-5. While running, edit matrix values again and confirm behavior changes without reset/reload.
+- `particle_life/physics/`
+  - `neighbors.py`: uniform-grid cell binning + compact pair-chunk construction (local interactions, no dense NxN matrix).
+  - `kernels.py`: vectorized force accumulation over pair chunks with cutoff + PBC support.
+  - `integrator.py`: SoA state integration (damping, noise, max-speed clamp, boundary handling).
+- `particle_life/simulation/`
+  - `config.py`: simulation config and sanitizers.
+  - `engine.py`: orchestration loop and state container (`pos`, `vel`, `species`, matrix).
+- `particle_life/realtime.py`
+  - FastAPI app, realtime websocket streaming, config APIs, replay metadata/chunk APIs.
+- `particle_life/storage.py`
+  - Offline replay writer/reader (`meta.json` + contiguous `frames.f32`).
+- `particle_life/offline.py`
+  - CLI for high-throughput offline generation and 10k-scale profiling.
 
-Backend sanity signal: when matrix updates are applied, server logs print a single-line version bump (`[sim] interaction matrix version -> N`).
+## Realtime + Web UI modes
 
-## Codespaces
+The UI provides:
+- **Live mode** (current websocket stream).
+- **Replay mode**:
+  - load recorded run
+  - play / pause
+  - scrub via timeline
+  - chunked frame fetching from backend APIs
+  - same WebGL renderer/frame decode path as live mode
 
-- Start the dev container (post-create runs setup automatically).
-- In **Ports**, ensure port `8000` is forwarded/public as needed.
-- Open the forwarded URL in your browser.
+## Offline run generation
 
+Generate a replay with the same simulation algorithm as realtime:
 
-## Initial condition JSON schema (stable v1)
-
-The app now supports a full simulation input JSON that deterministically defines a run.
-
-Top-level fields:
-
-- `schema_version`: must be `1`
-- `config`: full simulation/render config (same keys as `/api/config` values)
-- `num_types` (optional): alias for `config.species_count` for editor-friendly presets
-- `interaction_matrix`: `species_count x species_count` values in `[-1, 1]`
-- `particles`: array of `{ "position": [x, y], "velocity": [vx, vy], "type": int }`
-
-Notes:
-- `config.seed` is included so RNG-dependent behavior is reproducible.
-- `config.noise_strength` controls per-step random motion kicks (default `0` keeps deterministic baseline dynamics).
-- Particle positions are absolute world coordinates in `[0, world_size]`.
-- On load, the file fully replaces current simulation config, matrix, and particle state.
-
-Example:
-
-```json
-{"schema_version":1,"num_types":2,"config":{"species_count":2,"particles_per_species":10,"particle_counts":[2,1],"world_size":1.0,"interaction_radius":0.11,"repel_radius":0.025,"force_scale":0.42,"dt":0.015,"damping":0.975,"max_speed":0.05,"noise_strength":0.0,"steps_per_frame":1,"boundary_mode":"wrap","point_size":3.0,"point_opacity":0.95,"background_alpha":1.0,"show_hud":true,"pbc_tiling":false,"color_mode":"species","type_colors":["#ff6f5f","#56c3ff"],"seed":0},"interaction_matrix":[[1,0.2],[-0.2,1]],"particles":[{"position":[0.2,0.3],"velocity":[0,0],"type":0},{"position":[0.8,0.6],"velocity":[0,0],"type":1}]}
+```bash
+PYTHONPATH=src python -m particle_life.offline generate \
+  --name run_10k \
+  --output data/replays \
+  --frames 2400 \
+  --species-count 6 \
+  --particles-per-species 1667 \
+  --steps-per-frame 1 \
+  --seed 42
 ```
 
-## Initial condition editor
+Output format per run directory:
+- `meta.json` (config/seed/interaction matrix/particle count/frame count/storage layout)
+- `frames.f32` (append-friendly contiguous float32 frame records)
 
-Open `http://localhost:8000/editor`.
+## Replay playback
 
-- Set **Number of Types**, then pick a type, brush radius, and per-stroke density (defaults to `1`).
-- Click-drag on canvas to paint particles for that type.
-- Repeat with different types to create per-type spatial distributions.
-- Click **Save JSON** to write a preset under `data/initial_condition/`.
+1. Generate one or more runs in `data/replays`.
+2. Start realtime app.
+3. In UI: switch to **Replay** mode.
+4. Select run → **Load run**.
+5. Use **Play/Pause** and timeline scrub.
 
-## Loading presets in main UI
+## Profiling (N≈10,000)
 
-In `http://localhost:8000`:
+```bash
+PYTHONPATH=src python -m particle_life.offline profile --particles 10000 --steps 120 --warmup 30
+```
 
-- Use **Load input JSON** to load files from `data/initial_condition/`.
-- This applies all config values, interaction matrix, and initial particles atomically.
-- Use **Open editor** to create/edit new initial-condition files.
+This prints total runtime and average step milliseconds.
 
-## Acknowledgement
+## Notes
 
-This project started from [tom-mohr/particle-life-app](https://github.com/tom-mohr/particle-life-app) and was migrated to a Python + WebGL stack.
+- Core hot path avoids dense NxN memory and per-particle Python objects.
+- Data layout is structure-of-arrays (`positions`, `velocities`, `species`).
+- Realtime wire format remains float32 frame records compatible with the existing renderer semantics.
