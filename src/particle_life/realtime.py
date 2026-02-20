@@ -26,6 +26,7 @@ class SimConfig:
     dt: float = 0.015
     damping: float = 0.975
     max_speed: float = 0.05
+    noise_strength: float = 0.0
     steps_per_frame: int = 1
     boundary_mode: str = "wrap"
     point_size: float = 3.0
@@ -52,6 +53,7 @@ CONFIG_SECTIONS = [
             {"key": "dt", "type": "range", "label": "dt", "min": 0.001, "max": 0.06, "step": 0.001, "default": 0.015, "apply": "immediate"},
             {"key": "damping", "type": "range", "label": "Damping", "min": 0.85, "max": 0.999, "step": 0.001, "default": 0.975, "apply": "immediate"},
             {"key": "max_speed", "type": "range", "label": "Max Speed", "min": 0.005, "max": 0.2, "step": 0.001, "default": 0.05, "apply": "immediate"},
+            {"key": "noise_strength", "type": "range", "label": "Noise", "min": 0.0, "max": 1.0, "step": 0.001, "default": 0.0, "apply": "immediate"},
             {"key": "steps_per_frame", "type": "range", "label": "Steps / Frame", "min": 1, "max": 8, "step": 1, "default": 1, "apply": "immediate"},
             {"key": "boundary_mode", "type": "select", "label": "Boundary", "options": ["wrap", "bounce"], "default": "wrap", "apply": "immediate"},
         ],
@@ -177,6 +179,10 @@ class ParticleLifeSim:
         direction = -delta / dist[:, :, None]
         force = np.sum(direction * strength[:, :, None], axis=1)
         self.velocities = self.velocities * cfg.damping + force * cfg.dt
+        if cfg.noise_strength > 0:
+            # Scale by sqrt(dt) so noise is roughly time-step invariant (diffusion-like).
+            kick = self.rng.normal(0.0, cfg.noise_strength * np.sqrt(cfg.dt), self.velocities.shape).astype(np.float32)
+            self.velocities += kick
 
         speed = np.linalg.norm(self.velocities, axis=1)
         over = speed > cfg.max_speed
@@ -192,6 +198,17 @@ class ParticleLifeSim:
                 high = self.positions[:, axis] > cfg.world_size
                 self.positions[low | high, axis] = np.clip(self.positions[low | high, axis], 0, cfg.world_size)
                 self.velocities[low | high, axis] *= -1
+
+    def information_entropy(self, bins_per_dim: int = 16) -> float:
+        if self.count <= 0:
+            return 0.0
+        dims = int(self.positions.shape[1])
+        ranges = [(0.0, float(self.cfg.world_size))] * dims
+        hist, _ = np.histogramdd(self.positions, bins=[bins_per_dim] * dims, range=ranges)
+        probs = hist.ravel().astype(np.float64)
+        probs /= float(self.count)
+        probs = probs[probs > 0]
+        return float(-np.sum(probs * np.log(probs)))
 
     def snapshot(self) -> bytes:
         data = np.empty((self.count, 5), dtype=np.float32)
@@ -532,6 +549,7 @@ async def stream_particles(websocket: WebSocket) -> None:
                 for _ in range(sim.cfg.steps_per_frame):
                     sim.step()
             await websocket.send_bytes(sim.snapshot())
+            await websocket.send_text(json.dumps({"type": "stats", "entropy": sim.information_entropy()}))
             await asyncio.sleep(1 / 60)
     except WebSocketDisconnect:
         return
